@@ -1,7 +1,8 @@
 /*
- * Copyright (c) 2018, Intel Corporation.
- * SPDX-License-Identifier: BSD-3-Clause
- */
+* Copyright (c) 2018, Intel Corporation.
+* SPDX-License-Identifier: BSD-3-Clause
+*/
+#include <assert.h>
 #include <stdio.h>
 #include <memory.h>
 #include <Uefi.h>
@@ -21,21 +22,19 @@
 #include <Dimm.h>
 #include <NvmDimmDriver.h>
 #include <Common.h>
+#include <wchar.h>
 #ifdef _MSC_VER
 #include <io.h>
 #include <conio.h>
 #include <time.h>
-#include <wchar.h>
+#include <string.h>
 #else
 #include <unistd.h>
-#include <wchar.h>
 #include <fcntl.h>
-#include <safe_str_lib.h>
-#include <safe_mem_lib.h>
 #define _read read
 #define _getch getchar
 #endif
-#include <sys/stat.h> 
+#include <sys/stat.h>
 #include <fcntl.h>
 #include "os_efi_hii_auto_gen_strings.h"
 #include "os_efi_simple_file_protocol.h"
@@ -46,28 +45,31 @@
 #include <os_efi_api.h>
 #include <os_types.h>
 #include "event.h"
+#include "Pbr.h"
+#include "PbrDcpmm.h"
+#include <os_str.h>
 
 EFI_SYSTEM_TABLE *gST;
 EFI_SHELL_INTERFACE *mEfiShellInterface;
 EFI_RUNTIME_SERVICES *gRT;
 EFI_HANDLE gImageHandle;
 
+#define CLI_VERSION_MAX 25
+#define FILE_DESCRIPTION_MAX 1024
+#define FILE_DESCRIPTION "Intel(R) Optane(TM) DC Persistent Memory Recording File."
+
 extern EFI_SHELL_PARAMETERS_PROTOCOL gOsShellParametersProtocol;
 extern int get_vendor_driver_revision(char * version_str, const int str_len);
-extern int g_record_mode;
-extern int g_playback_mode;
 extern NVMDIMMDRIVER_DATA *gNvmDimmData;
-extern char g_smbios_rec_path[PATH_MAX];
-extern char g_passthru_rec_path[PATH_MAX];
-extern char g_acpi_nfit_rec_path[PATH_MAX];
-extern char g_acpi_pmtt_rec_path[PATH_MAX];
-extern char g_acpi_pcat_rec_path[PATH_MAX];
+extern BOOLEAN is_verbose_debug_print_enabled();
+
 
 UINT8 *gSmbiosTable = NULL;
 size_t gSmbiosTableSize = 0;
 UINT8 gSmbiosMinorVersion = 0;
 UINT8 gSmbiosMajorVersion = 0;
 
+#define SMBIOS_SIZE     0x2800 
 typedef struct _smbios_table_recording
 {
   size_t size;
@@ -76,24 +78,10 @@ typedef struct _smbios_table_recording
   UINT8 table[];
 }smbios_table_recording;
 
-int g_pass_thru_cnt = 0;
-size_t g_pass_thru_playback_offset = 0;
-
-#define REC_FILE_SMBIOS g_smbios_rec_path
-#define REC_FILE_PASSTHRU g_passthru_rec_path
-#define REC_FILE_ACPI_NFIT g_acpi_nfit_rec_path
-#define REC_FILE_ACPI_PCAT g_acpi_pcat_rec_path
-#define REC_FILE_ACPI_PMTT g_acpi_pmtt_rec_path
-#define PLAYBACK_ENABLED() g_playback_mode
-#define RECORD_ENABLED() g_record_mode
-#define INC_PASS_THRU_CNT() ++g_pass_thru_cnt
-#define APPEND_RECORDING() g_pass_thru_cnt
-
 struct debug_logger_config
 {
-  CHAR8 initialized : 1;
+  UINT8 initialized : 1;
   CHAR8 stdout_enabled;
-  CHAR8 file_enabled;
   CHAR8 level;
 };
 enum
@@ -107,338 +95,50 @@ enum
 
 #define INI_PREFERENCES_LOG_LEVEL L"DBG_LOG_LEVEL"
 #define INI_PREFERENCES_LOG_STDOUT_ENABLED L"DBG_LOG_STDOUT_ENABLED"
-#define INI_PREFERENCES_LOG_DEBUG_FILE_ENABLED L"DBG_LOG_DEBUG_FILE_ENABLED"
 
 /*
 * Debug logger context structure.
 */
 static struct debug_logger_config g_log_config = { 0 };
 
-
-EFI_STATUS
-passthru_playback(
-  IN OUT FW_CMD *pCmd
-)
-{
-  if (!PLAYBACK_ENABLED())
-  {
-    return EFI_UNSUPPORTED;
-  }
-
-  if (NULL == pCmd)
-  {
-    return EFI_INVALID_PARAMETER;
-  }
-
-  FILE *f_passthru_ptr = NULL;
-
-  pass_thru_record_req pt_rec_req;
-  pass_thru_record_resp pt_rec_resp;
-  errno_t open_result = fopen_s(&f_passthru_ptr, REC_FILE_PASSTHRU, "rb");
-  if (0 != open_result)
-  {
-    NVDIMM_ERR("Failed to open the following recording file: %s\n", REC_FILE_PASSTHRU);
-    return EFI_END_OF_FILE;
-  }
-
-  if (0 != fseek(f_passthru_ptr, g_pass_thru_playback_offset, SEEK_SET))
-  {
-    NVDIMM_ERR("Failed seeking into playback file\n");
-    return EFI_END_OF_FILE;
-  }
-
-  if (1 != fread(&pt_rec_req, sizeof(pass_thru_record_req), 1, f_passthru_ptr))
-  {
-    NVDIMM_ERR("Failed to read the request packet from the recording file\n");
-    return EFI_END_OF_FILE;
-  }
-
-  if (0 != fseek(f_passthru_ptr, pt_rec_req.InputPayloadSize, SEEK_CUR))
-  {
-    NVDIMM_ERR("Failed seeking into playback file\n");
-    return EFI_END_OF_FILE;
-  }
-
-  if (1 != fread(&pt_rec_resp, sizeof(pass_thru_record_resp), 1, f_passthru_ptr))
-  {
-    NVDIMM_ERR("Failed to read the response packet from the recording file\n");
-    return EFI_END_OF_FILE;
-  }
-
-  if (0 == pt_rec_resp.OutputPayloadSize)
-  {
-    NVDIMM_ERR("Payload size is reporting 0 in the recording file\n");
-    return EFI_END_OF_FILE;
-  }
-
-  if (pt_rec_resp.OutputPayloadSize > IN_PAYLOAD_SIZE)
-  {
-    pCmd->LargeOutputPayloadSize = pt_rec_resp.OutputPayloadSize;
-    if (1 != fread(pCmd->LargeOutputPayload, pt_rec_resp.OutputPayloadSize, 1, f_passthru_ptr))
-    {
-      NVDIMM_ERR("Failed to read the LargeOutputPayload from the recording file\n");
-      return EFI_END_OF_FILE;
-    }
-  }
-  else
-  {
-    pCmd->OutputPayloadSize = pt_rec_resp.OutputPayloadSize;
-    if (1 != fread(pCmd->OutPayload, pt_rec_resp.OutputPayloadSize, 1, f_passthru_ptr))
-    {
-      NVDIMM_ERR("Failed to read the OutputPayload from the recording file\n");
-      return EFI_END_OF_FILE;
-    }
-  }
-  g_pass_thru_playback_offset = ftell(f_passthru_ptr);
-  fclose(f_passthru_ptr);
-  INC_PASS_THRU_CNT();
-
-  return EFI_SUCCESS;
-}
-
-EFI_STATUS
-passthru_record_setup(
-  FILE **f_passthru_ptr,
-  IN OUT FW_CMD *pCmd
-)
-{
-
-  if (!RECORD_ENABLED())
-  {
-    NVDIMM_ERR("Recording mode not enabled. \n");
-    return EFI_UNSUPPORTED;
-  }
-
-  if (NULL == f_passthru_ptr || NULL == pCmd)
-  {
-    return EFI_INVALID_PARAMETER;
-  }
-
-  if (APPEND_RECORDING())
-  {
-    errno_t open_result = fopen_s(f_passthru_ptr, REC_FILE_PASSTHRU, "ab");
-    if (0 != open_result)
-    {
-      NVDIMM_ERR("Failed to open the following recording file in append mode: %s\n", REC_FILE_PASSTHRU);
-      return EFI_END_OF_FILE;
-    }
-  }
-  else
-  {
-    errno_t open_result = fopen_s(f_passthru_ptr, REC_FILE_PASSTHRU, "wb");
-    if (0 != open_result)
-    {
-      NVDIMM_ERR("Failed to open the following recording file: %s\n", REC_FILE_PASSTHRU);
-      return EFI_END_OF_FILE;
-    }
-  }
-
-  if (0 != fseek(*f_passthru_ptr, 0, SEEK_END))
-  {
-    NVDIMM_ERR("Failed seeking into playback file\n");
-    return EFI_END_OF_FILE;
-  }
-
-  return EFI_SUCCESS;
-}
-
-EFI_STATUS
-passthru_record_finalize(
-  FILE *f_passthru_ptr,
-  IN OUT FW_CMD *pCmd,
-  UINT32 DimmID
-)
-{
-  EFI_STATUS Rc = EFI_SUCCESS;
-
-  if (!RECORD_ENABLED())
-  {
-    NVDIMM_ERR("Recording mode not enabled. \n");
-    return EFI_UNSUPPORTED;
-  }
-
-  if (NULL == f_passthru_ptr || NULL == pCmd)
-  {
-    return EFI_INVALID_PARAMETER;
-  }
-
-  pass_thru_record_req pt_rec_req;
-  pt_rec_req.DimmId = DimmID;
-  pt_rec_req.Opcode = pCmd->Opcode;
-  pt_rec_req.SubOpcode = pCmd->SubOpcode;
-  pt_rec_req.InputPayloadSize = pCmd->InputPayloadSize + pCmd->LargeInputPayloadSize;
-
-  size_t bytes_written = 0;
-  bytes_written = fwrite(&pt_rec_req, sizeof(pass_thru_record_req), 1, f_passthru_ptr);
-  if (1 != bytes_written)
-  {
-    NVDIMM_ERR("Failed to write the request packet to the recording file\n");
-    return EFI_END_OF_FILE;
-  }
-
-  if (pCmd->InputPayloadSize)
-  {
-    if (1 != fwrite(pCmd->InputPayload, pCmd->InputPayloadSize, 1, f_passthru_ptr))
-    {
-      NVDIMM_ERR("Failed to write the input payload to the recording file \n");
-      return EFI_END_OF_FILE;
-    }
-  }
-  else if (pCmd->LargeInputPayloadSize)
-  {
-    if (1 != fwrite(pCmd->LargeInputPayload, pCmd->LargeInputPayloadSize, 1, f_passthru_ptr))
-    {
-      NVDIMM_ERR("Failed to write the large input payload to the recording file \n");
-      return EFI_END_OF_FILE;
-    }
-  }
-
-  pass_thru_record_resp pt_rec_resp;
-  pt_rec_resp.DimmId = DimmID;
-  pt_rec_resp.Status = pCmd->Status;
-  pt_rec_resp.OutputPayloadSize = pCmd->OutputPayloadSize + pCmd->LargeOutputPayloadSize;
-  if (1 != fwrite(&pt_rec_resp, sizeof(pass_thru_record_resp), 1, f_passthru_ptr))
-  {
-    NVDIMM_ERR("Failed to write the response payload to the recording file \n");
-    return EFI_END_OF_FILE;
-  }
-  if (pCmd->OutputPayloadSize)
-  {
-    if (1 != fwrite(pCmd->OutPayload, pCmd->OutputPayloadSize, 1, f_passthru_ptr))
-    {
-      NVDIMM_ERR("Failed to write the outpayload to the recording file \n");
-      return EFI_END_OF_FILE;
-    }
-  }
-  else if (pCmd->LargeOutputPayloadSize)
-  {
-    if (1 != fwrite(pCmd->LargeOutputPayload, pCmd->LargeOutputPayloadSize, 1, f_passthru_ptr))
-    {
-      NVDIMM_ERR("Failed to write the large outpayload to the recording file \n");
-      return EFI_END_OF_FILE;
-    }
-  }
-  fflush(f_passthru_ptr);
-  fclose(f_passthru_ptr);
-  return EFI_SUCCESS;
-}
-
 EFI_STATUS
 EFIAPI
-PassThru(
+DefaultPassThru(
   IN     struct _DIMM *pDimm,
   IN OUT FW_CMD *pCmd,
   IN     UINT64 Timeout
 )
 {
   EFI_STATUS Rc = EFI_SUCCESS;
-  EFI_STATUS RecordRc = EFI_SUCCESS;
-  UINT32 ReturnCode;
+  EFI_STATUS PbrRc = EFI_SUCCESS;
   UINT32 DimmID;
-  FILE *f_passthru_ptr = NULL;
+  PbrContext *pContext = PBR_CTX();
 
   if (!pDimm || !pCmd)
     return EFI_INVALID_PARAMETER;
 
-  if (PLAYBACK_ENABLED())
+  if (PBR_PLAYBACK_MODE == PBR_GET_MODE(pContext))
   {
-    return passthru_playback(pCmd);
-  }
-
-  if (RECORD_ENABLED())
-  {
-    RecordRc = passthru_record_setup(&f_passthru_ptr, pCmd);
-    if (EFI_SUCCESS != RecordRc)
-    {
-      return RecordRc;
+    Rc = PbrGetPassThruRecord(pContext, pCmd, &PbrRc);
+    if (EFI_SUCCESS == Rc) {
+      Rc = PbrRc;
     }
+    return Rc;
   }
 
   DimmID = pCmd->DimmID;
   pCmd->DimmID = pDimm->DeviceHandle.AsUint32;
-  Rc = passthru_os(pDimm, pCmd, Timeout);
-  INC_PASS_THRU_CNT();
+  Rc = passthru_os(pDimm, pCmd, (long)Timeout);
+
+  if (PBR_RECORD_MODE == PBR_GET_MODE(pContext))
+  {
+      Rc = PbrSetPassThruRecord(pContext, pCmd, Rc);
+  }
   pCmd->DimmID = DimmID;
 
-  if (RECORD_ENABLED())
-  {
-    RecordRc = passthru_record_finalize(f_passthru_ptr, pCmd, DimmID);
-    if (EFI_SUCCESS != Rc)
-    {
-      return RecordRc;
-    }
-  }
-
   return Rc;
 }
 
-EFI_STATUS
-save_table_to_file(
-  char* destFile,
-  EFI_ACPI_DESCRIPTION_HEADER *table
-)
-{
-  EFI_STATUS Rc = EFI_SUCCESS;
-  FILE* f_ptr;
-  errno_t open_result = fopen_s(&f_ptr, destFile, "w+b");
-  if (0 != open_result)
-  {
-    return EFI_END_OF_FILE;
-  }
-
-  if (table && 1 != fwrite(table, table->Length, 1, f_ptr))
-  {
-    Rc = EFI_END_OF_FILE;
-  }
-
-  fclose(f_ptr);
-  return Rc;
-}
-
-
-EFI_STATUS
-load_table_from_file(
-  char* sourceFile,
-  EFI_ACPI_DESCRIPTION_HEADER ** table
-)
-{
-  EFI_STATUS Rc = EFI_SUCCESS;
-  UINT32 size;
-  FILE* f_ptr;
-
-  *table = NULL;
-  errno_t open_result = fopen_s(&f_ptr, sourceFile, "rb");
-  if (0 != open_result)
-  {
-    Rc = EFI_END_OF_FILE;
-    return Rc;
-  }
-
-  fseek(f_ptr, 0, SEEK_END);
-  size = ftell(f_ptr);
-  fseek(f_ptr, 0, SEEK_SET);  //same as rewind(f);
-  if (!size)
-  {
-    Rc = EFI_END_OF_FILE;
-  }
-  else
-  {
-    *table = AllocatePool(size);
-    if (!*table)
-    {
-      Rc = EFI_OUT_OF_RESOURCES;
-    }
-    else {
-      if (1 != fread(*table, size, 1, f_ptr))
-      {
-        Rc = EFI_END_OF_FILE;
-      }
-    }
-  }
-
-  fclose(f_ptr);
-  return Rc;
-}
 
 EFI_STATUS
 initAcpiTables()
@@ -448,60 +148,72 @@ initAcpiTables()
   EFI_ACPI_DESCRIPTION_HEADER * PtrPcatTable = NULL;
   EFI_ACPI_DESCRIPTION_HEADER * PtrPMTTTable = NULL;
   UINT32 failures = 0;
+  PbrContext *pContext = PBR_CTX();
+  UINT32 Size = 0;
 
-  if (PLAYBACK_ENABLED())
+  if (PBR_PLAYBACK_MODE == PBR_GET_MODE(pContext))
   {
-    if (EFI_ERROR(load_table_from_file(REC_FILE_ACPI_NFIT, &PtrNfitTable)))
-    {
-      Print(L"Failed to load the NFIT table from the record file.\n");
+    ReturnCode = PbrGetTableRecord(pContext, PBR_RECORD_TYPE_NFIT, (VOID**)&PtrNfitTable, (UINT32*)&Size);
+    if (EFI_ERROR(ReturnCode)) {
+      Print(L"Failed to record NFIT");
       failures++;
     }
 
-    if (EFI_ERROR(load_table_from_file(REC_FILE_ACPI_PCAT, &PtrPcatTable)))
-    {
-      Print(L"Failed to load the PCAT table from the record file.\n");
+    ReturnCode = PbrGetTableRecord(pContext, PBR_RECORD_TYPE_PCAT, (VOID**)&PtrPcatTable, (UINT32*)&Size);
+    if (EFI_ERROR(ReturnCode)) {
+      Print(L"Failed to record PCAT");
       failures++;
     }
 
-    if (EFI_ERROR(load_table_from_file(REC_FILE_ACPI_PMTT, &PtrPMTTTable)))
-    {
-      //Print(L"Failed to load the PMTT table from the record file.\n");
-      //failures++;
+    ReturnCode = PbrGetTableRecord(pContext, PBR_RECORD_TYPE_PMTT, (VOID**)&PtrPMTTTable, (UINT32*)&Size);
+    if (EFI_ERROR(ReturnCode)) {
+      Print(L"Failed to record PMTT");
+      //failures++; allowed to not be there
     }
   }
   else
   {
-    if (EFI_ERROR(get_nfit_table(&PtrNfitTable)))
+    if (EFI_ERROR(get_nfit_table(&PtrNfitTable, &Size)))
     {
-      Print(L"Failed to get the NFIT table.\n");
+      NVDIMM_WARN("Failed to get the NFIT table.\n");
       failures++;
-    }
-    if (EFI_ERROR(get_pcat_table(&PtrPcatTable)))
-    {
-      Print(L"Failed to get the PCAT table.\n");
-      failures++;
-    }
-    if (EFI_ERROR(get_pmtt_table(&PtrPMTTTable)))
-    {
-      //Print(L"Failed to get the PMTT table.\n");
-      //failures++;
     }
 
-    if (RECORD_ENABLED())
+    if (PBR_RECORD_MODE == PBR_GET_MODE(pContext))
     {
-      if (EFI_ERROR(save_table_to_file(REC_FILE_ACPI_NFIT, PtrNfitTable)))
-      {
-        Print(L"Failed to save the NFIT table to the record file.\n");
+      ReturnCode = PbrSetTableRecord(pContext, PBR_RECORD_TYPE_NFIT, PtrNfitTable, Size);
+      if (EFI_ERROR(ReturnCode)) {
+        Print(L"Failed to record NFIT");
         failures++;
       }
-      if (EFI_ERROR(save_table_to_file(REC_FILE_ACPI_PCAT, PtrPcatTable)))
-      {
-        Print(L"Failed to save the PCAT table to the record file.\n");
+    }
+
+    if (EFI_ERROR(get_pcat_table(&PtrPcatTable, &Size)))
+    {
+      NVDIMM_WARN("Failed to get the PCAT table.\n");
+      failures++;
+    }
+
+    if (PBR_RECORD_MODE == PBR_GET_MODE(pContext))
+    {
+      ReturnCode = PbrSetTableRecord(pContext, PBR_RECORD_TYPE_PCAT, PtrPcatTable, Size);
+      if (EFI_ERROR(ReturnCode)) {
+        Print(L"Failed to record PCAT");
         failures++;
       }
-      if (EFI_ERROR(save_table_to_file(REC_FILE_ACPI_PMTT, PtrPMTTTable)))
-      {
-        //Print(L"Failed to save the PMTT table to the record file.\n");
+    }
+
+    if (EFI_ERROR(get_pmtt_table(&PtrPMTTTable, &Size)))
+    {
+      NVDIMM_WARN("Failed to get the PMTT table.\n");
+      //failures++; //table allowed to be empty. Not a failure
+    }
+
+    if (PBR_RECORD_MODE == PBR_GET_MODE(pContext))
+    {
+      ReturnCode = PbrSetTableRecord(pContext, PBR_RECORD_TYPE_PMTT, PtrPMTTTable, Size);
+      if (EFI_ERROR(ReturnCode)) {
+        Print(L"Failed to record PMTT");
         //failures++;
       }
     }
@@ -509,28 +221,36 @@ initAcpiTables()
 
   if (failures > 0)
   {
-    Print(L"Encountered %d failures.\n", failures);
     NVDIMM_WARN("Encountered %d failures.", failures);
-    return EFI_NOT_FOUND;
+    ReturnCode = EFI_NOT_FOUND;
+    goto Finish;
   }
 
-  if (NULL == &PtrNfitTable || NULL == &PtrPcatTable)
+  if (NULL == PtrNfitTable || NULL == PtrPcatTable)
   {
     NVDIMM_WARN("Failed to obtain NFIT or PCAT table.");
-    return EFI_NOT_FOUND;
+    ReturnCode = EFI_NOT_FOUND;
+    goto Finish;
   }
   else
   {
     ReturnCode = ParseAcpiTables(PtrNfitTable, PtrPcatTable, PtrPMTTTable,
-      &gNvmDimmData->PMEMDev.pFitHead, &gNvmDimmData->PMEMDev.pPcatHead, &gNvmDimmData->PMEMDev.IsMemModeAllowedByBios);
+      &gNvmDimmData->PMEMDev.pFitHead, &gNvmDimmData->PMEMDev.pPcatHead, &gNvmDimmData->PMEMDev.pPmttHead,
+      &gNvmDimmData->PMEMDev.IsMemModeAllowedByBios);
     if (EFI_ERROR(ReturnCode))
     {
       NVDIMM_WARN("Failed to parse NFIT or PCAT or PMTT table.");
-      return EFI_NOT_FOUND;
+      ReturnCode = EFI_NOT_FOUND;
+      goto Finish;
     }
   }
-
-  return EFI_SUCCESS;
+Finish:
+  if (PBR_PLAYBACK_MODE != PBR_GET_MODE(pContext)) {
+    FREE_POOL_SAFE(PtrNfitTable);
+    FREE_POOL_SAFE(PtrPcatTable);
+    FREE_POOL_SAFE(PtrPMTTTable);
+  }
+  return ReturnCode;
 }
 
 EFI_STATUS
@@ -539,91 +259,94 @@ uninitAcpiTables(
 {
   FREE_POOL_SAFE(gNvmDimmData->PMEMDev.pFitHead);
   FREE_POOL_SAFE(gNvmDimmData->PMEMDev.pPcatHead);
-  FREE_POOL_SAFE(gNvmDimmData->PMEMDev.pPMTTTble);
   return EFI_SUCCESS;
 }
 
 
-VOID
+EFI_STATUS
 GetFirstAndBoundSmBiosStructPointer(
   OUT SMBIOS_STRUCTURE_POINTER *pSmBiosStruct,
   OUT SMBIOS_STRUCTURE_POINTER *pLastSmBiosStruct,
   OUT SMBIOS_VERSION *pSmbiosVersion
 )
 {
-  int rc = 0;
-  FILE *f_ptr;
-  smbios_table_recording recording;
+  EFI_STATUS ReturnCode = EFI_SUCCESS;
+  smbios_table_recording *recording = NULL;
+  UINT32 record_size = 0;
+  PbrContext *pContext = PBR_CTX();
 
   if (pSmBiosStruct == NULL || pLastSmBiosStruct == NULL || pSmbiosVersion == NULL) {
-    return;
+    return EFI_INVALID_PARAMETER;
   }
 
   // One time initialization
-  if (NULL == gSmbiosTable && !PLAYBACK_ENABLED())
+  if (NULL == gSmbiosTable && PBR_PLAYBACK_MODE != PBR_GET_MODE(pContext))
   {
-    rc = get_smbios_table();
+    get_smbios_table();
   }
 
-  if (RECORD_ENABLED())
+  if (PBR_RECORD_MODE == PBR_GET_MODE(pContext))
   {
-    recording.major = gSmbiosMajorVersion;
-    recording.minor = gSmbiosMinorVersion;
-    recording.size = gSmbiosTableSize;
-
-    errno_t open_result = fopen_s(&f_ptr, REC_FILE_SMBIOS, "w+b");
-    if (0 == open_result && NULL != gSmbiosTable)
-    {
-      if (1 != fwrite(&recording, sizeof(smbios_table_recording), 1, f_ptr))
-      {
-        NVDIMM_ERR("Failed to write to recording file: %s\n", REC_FILE_SMBIOS);
-      }
-      if (1 != fwrite(gSmbiosTable, gSmbiosTableSize, 1, f_ptr))
-      {
-        NVDIMM_ERR("Failed to write to recording file: %s\n", REC_FILE_SMBIOS);
-      }
-      fclose(f_ptr);
+    recording = malloc(sizeof(smbios_table_recording) + gSmbiosTableSize);
+    if (NULL == recording) {
+      ReturnCode = EFI_OUT_OF_RESOURCES;
+      goto Finish;
     }
-  }
-  else if (PLAYBACK_ENABLED() && NULL == gSmbiosTable)
-  {
-    errno_t open_result = fopen_s(&f_ptr, REC_FILE_SMBIOS, "rb");
-    if (0 == open_result && NULL == gSmbiosTable)
-    {
-      if (1 != fread(&recording, sizeof(smbios_table_recording), 1, f_ptr))
-      {
-        NVDIMM_ERR("Failed to read from recording file: %s\n", REC_FILE_SMBIOS);
-      }
 
-      if (0 == recording.size)
+    recording->major = gSmbiosMajorVersion;
+    recording->minor = gSmbiosMinorVersion;
+    recording->size = gSmbiosTableSize;
+    if (gSmbiosTable) {
+      CopyMem(recording->table, gSmbiosTable, gSmbiosTableSize);
+    }
+    else {
+      NVDIMM_ERR("Problems initializing smbios table\n");
+    }
+
+    ReturnCode = PbrSetTableRecord(pContext, PBR_RECORD_TYPE_SMBIOS, recording, (UINT32)(sizeof(smbios_table_recording) + gSmbiosTableSize));
+    if (EFI_ERROR(ReturnCode)) {
+      FREE_POOL_SAFE(recording);
+      Print(L"Failed to record SMBIOS2");
+      goto Finish;
+    }
+    FREE_POOL_SAFE(recording);
+  }
+  else if (PBR_PLAYBACK_MODE == PBR_GET_MODE(pContext) && NULL == gSmbiosTable)
+  {
+    ReturnCode = PbrGetTableRecord(pContext, PBR_RECORD_TYPE_SMBIOS, (VOID**)&recording, &record_size);
+    if (EFI_ERROR(ReturnCode) || record_size == 0) {
+      goto Finish;
+    }
+
+    if (NULL == gSmbiosTable) {
+
+      if (SMBIOS_SIZE < recording->size || 0 == recording->size)
       {
-        NVDIMM_ERR("SMBIOS table in file %s reports size of 0.\n", REC_FILE_SMBIOS);
+        //todo: fix error message
+        NVDIMM_ERR("Invalid PBR SMBIOS table size - %d.\n", recording->size);
+        ReturnCode = EFI_END_OF_FILE;
       }
-      else 
+      else
       {
-        gSmbiosTable = calloc(1, recording.size);
+        gSmbiosTable = calloc(1, recording->size);
         if (NULL == gSmbiosTable)
         {
           NVDIMM_ERR("Unable to alloc for SMBIOS table\n");
+          ReturnCode = EFI_END_OF_FILE;
+          goto Finish;
         }
         else
         {
-          size_t bytesRead = fread(gSmbiosTable, recording.size, 1, f_ptr);
-          if (bytesRead != 1)
-          {
-            NVDIMM_ERR("SMBIOS table in file %s - read %lu bytes, expected %lu.\n", REC_FILE_SMBIOS, bytesRead, recording.size);
-          }
+          CopyMem(gSmbiosTable, recording->table, recording->size);
         }
 
-        gSmbiosMajorVersion = recording.major;
-        gSmbiosMinorVersion = recording.minor;
-        gSmbiosTableSize = recording.size;
+        gSmbiosMajorVersion = recording->major;
+        gSmbiosMinorVersion = recording->minor;
+        gSmbiosTableSize = recording->size;
       }
-
-      fclose(f_ptr);
     }
   }
-
+Finish:
   if (NULL != gSmbiosTable)
   {
     pSmBiosStruct->Raw = (UINT8 *)gSmbiosTable;
@@ -634,7 +357,9 @@ GetFirstAndBoundSmBiosStructPointer(
   else
   {
     NVDIMM_ERR("Failed to retrieve smbios table\n");
+    ReturnCode = EFI_END_OF_FILE;
   }
+  return ReturnCode;
 }
 
 /*
@@ -657,10 +382,11 @@ static void get_logger_config(struct debug_logger_config *p_log_config)
   efi_status = GET_VARIABLE(INI_PREFERENCES_LOG_STDOUT_ENABLED, guid, &size, &p_log_config->stdout_enabled);
   if (EFI_SUCCESS != efi_status)
     return;
-  size = sizeof(p_log_config->file_enabled);
-  efi_status = GET_VARIABLE(INI_PREFERENCES_LOG_DEBUG_FILE_ENABLED, guid, &size, &p_log_config->file_enabled);
-  if (EFI_SUCCESS != efi_status)
-    return;
+  if (is_verbose_debug_print_enabled())
+  {
+    p_log_config->stdout_enabled = TRUE;
+    p_log_config->level = LOG_VERBOSE;
+  }
 
   p_log_config->initialized = TRUE;
 }
@@ -681,15 +407,13 @@ DebugLoggerEnable(
 
   if (EnableDbgLogger)
   {
-    if (FALSE == g_log_config.file_enabled)
-      g_log_config.file_enabled = TRUE;
+    if (FALSE == g_log_config.stdout_enabled)
+      g_log_config.stdout_enabled = TRUE;
     if (LOGGER_OFF == g_log_config.level)
       g_log_config.level = LOG_WARNING;
   }
   else
   {
-    if (TRUE == g_log_config.file_enabled)
-      g_log_config.file_enabled = FALSE;
     if (TRUE == g_log_config.stdout_enabled)
       g_log_config.stdout_enabled = FALSE;
   }
@@ -707,14 +431,15 @@ IsDebugLoggerEnabled()
   if (FALSE == g_log_config.initialized) {
     return FALSE;
   }
-  if (LOGGER_OFF != g_log_config.level) {
-    if ((TRUE == g_log_config.file_enabled) ||
-      (TRUE == g_log_config.stdout_enabled)) {
-      return TRUE;
-    }
+  if ((LOGGER_OFF != g_log_config.level) && (TRUE == g_log_config.stdout_enabled)) {
+    return TRUE;
   }
   return FALSE;
 }
+
+#ifdef NDEBUG
+void (*rel_assert) (void) = NULL;
+#endif // NDEBUG
 
 /**
 Prints a debug message to the debug output device if the specified error level is enabled.
@@ -740,21 +465,29 @@ DebugPrint(
 )
 {
   VA_LIST args;
-  static unsigned int event_type_common = 0;
   NVM_EVENT_MSG event_message;
   UINT32 size = sizeof(event_message);
 
   if (FALSE == g_log_config.initialized)
   {
     get_logger_config(&g_log_config);
-    if (g_log_config.file_enabled)
-      event_type_common |= SYSTEM_EVENT_TYPE_SYSLOG_FILE_SET(TRUE);
-    if (g_log_config.stdout_enabled)
-      event_type_common |= SYSTEM_EVENT_TYPE_SOUT_SET(TRUE);
-    event_type_common |= SYSTEM_EVENT_TYPE_SEVERITY_SET(SYSTEM_EVENT_TYPE_DEBUG);
   }
-  if (LOGGER_OFF == g_log_config.level)
+
+  if (ErrorLevel == OS_DEBUG_CRIT) {
+    // Send the debug entry to the logger
+    VA_START(args, Format);
+    AsciiVSPrint(event_message, size, Format, args);
+    VA_END(args);
+    write_system_event_to_stdout(NVM_DEBUG_LOGGER_SOURCE, event_message);
+#ifdef NDEBUG
+    rel_assert ();
+#else // NDEBUG
+    assert(FALSE);
+#endif // NDEBUG
+  }
+  else if (LOGGER_OFF == g_log_config.level || g_log_config.stdout_enabled == FALSE)
     return;
+
   if (((LOG_ERROR == g_log_config.level) & (ErrorLevel == OS_DEBUG_ERROR)) ||
     ((LOG_WARNING == g_log_config.level) & ((ErrorLevel == OS_DEBUG_ERROR) || (ErrorLevel == OS_DEBUG_WARN))) ||
     ((LOG_INFO == g_log_config.level) & ((ErrorLevel == OS_DEBUG_ERROR) || (ErrorLevel == OS_DEBUG_WARN) || (ErrorLevel == OS_DEBUG_INFO))) ||
@@ -764,7 +497,7 @@ DebugPrint(
     VA_START(args, Format);
     AsciiVSPrint(event_message, size, Format, args);
     VA_END(args);
-    nvm_store_system_entry(NVM_DEBUG_LOGGER_SOURCE, event_type_common, NULL, event_message);
+    write_system_event_to_stdout(NVM_DEBUG_LOGGER_SOURCE, event_message);
   }
 }
 
@@ -812,11 +545,7 @@ AsciiVSPrint(
   if (0 == BufferSize)
     return BufferSize;
 
-  return vsnprintf_s(StartOfBuffer, BufferSize
-#ifdef _MSC_VER 
-    , BufferSize - 1
-#endif
-    , FormatString, Marker);
+  return os_vsnprintf(StartOfBuffer, BufferSize, FormatString, Marker);
 }
 
 /**
@@ -909,7 +638,7 @@ ZeroMem(
   IN UINTN  Length
 )
 {
-  memset(Buffer, 0, Length);
+  memset(Buffer, 0, (size_t)Length);
   return Buffer;
 }
 
@@ -955,7 +684,7 @@ CopyMem(
   IN UINTN       Length
 )
 {
-  memcpy_s(DestinationBuffer, Length, SourceBuffer, Length);
+  os_memcpy(DestinationBuffer, Length, SourceBuffer, Length);
   return DestinationBuffer;
 }
 
@@ -991,7 +720,7 @@ CompareMem(
   IN UINTN       Length
 )
 {
-  return memcmp(DestinationBuffer, SourceBuffer, Length);
+  return memcmp(DestinationBuffer, SourceBuffer, (size_t)Length);
 }
 
 /**
@@ -1169,7 +898,7 @@ CatVSPrint(
   VA_COPY(ExtraMarker, Marker);
   static const int nBuffSize = 8192;
   static wchar_t evalBuff[8192];
-  CharactersRequired = vswprintf_s(evalBuff, nBuffSize, FormatString, ExtraMarker);
+  CharactersRequired = os_vswprintf(evalBuff, nBuffSize, FormatString, ExtraMarker);
   if (CharactersRequired > nBuffSize)
     return NULL;
 
@@ -1189,9 +918,9 @@ CatVSPrint(
   }
 
   if (String != NULL) {
-    wcscpy_s(BufferToReturn, SizeRequired / sizeof(CHAR16), String);
+    os_wcscpy(BufferToReturn, (SizeRequired / sizeof(CHAR16)), String);
   }
-  vswprintf_s(BufferToReturn + StrLen(BufferToReturn), (CharactersRequired + 1), FormatString, Marker);
+  os_vswprintf(BufferToReturn + StrLen(BufferToReturn), (CharactersRequired + 1), FormatString, Marker);
 
   ASSERT(StrSize(BufferToReturn) == SizeRequired);
 
@@ -1256,7 +985,7 @@ AllocatePool(
   IN UINTN  AllocationSize
 )
 {
-  return malloc(AllocationSize);
+  return malloc((size_t)AllocationSize);
 }
 
 /**
@@ -1278,7 +1007,7 @@ AllocateZeroPool(
   IN UINTN  AllocationSize
 )
 {
-  return calloc(AllocationSize, 1);
+  return calloc((size_t)AllocationSize, 1);
 }
 
 /**
@@ -1305,9 +1034,9 @@ AllocateCopyPool(
   IN CONST VOID  *Buffer
 )
 {
-  void * ptr = calloc(AllocationSize, 1);
+  void * ptr = calloc((size_t)AllocationSize, 1);
   if (NULL != ptr) {
-    memcpy_s(ptr, AllocationSize, Buffer, AllocationSize);
+    os_memcpy(ptr, AllocationSize, Buffer, AllocationSize);
   }
   return ptr;
 }
@@ -1341,7 +1070,7 @@ ReallocatePool(
   IN VOID   *OldBuffer  OPTIONAL
 )
 {
-  return realloc(OldBuffer, NewSize);
+  return realloc(OldBuffer, (size_t)NewSize);
 }
 
 /**
@@ -1475,7 +1204,7 @@ SetMem(
   IN UINT8  Value
 )
 {
-  memset(Buffer, Value, Length);
+  memset(Buffer, Value, (size_t)Length);
   return Buffer;
 }
 
@@ -1840,7 +1569,8 @@ HandleParsingLibDestructor(
   return 0;
 }
 #define MAX_PROMT_INPUT_SZ 1024
-#define RETURN_KEY	13
+#define RETURN_KEY	0xD
+#define LINE_FEED 0xA
 
 /**
 Prompted input request
@@ -1863,6 +1593,8 @@ PromptedInput(
 {
   EFI_STATUS ReturnCode = EFI_SUCCESS;
   int PromptIndex;
+  char ThrowAway;
+  BOOLEAN NoReturn = TRUE;
 
   NVDIMM_ENTRY();
 
@@ -1875,20 +1607,36 @@ PromptedInput(
   char buff[MAX_PROMT_INPUT_SZ];
   memset(buff, 0, MAX_PROMT_INPUT_SZ);
 
-  for (PromptIndex = 0; PromptIndex < MAX_PROMT_INPUT_SZ; ++PromptIndex)
-  {
+  for (PromptIndex = 0; PromptIndex < (MAX_PROMT_INPUT_SZ - 1); ++PromptIndex) {
     buff[PromptIndex] = _getch();
-    if (RETURN_KEY == buff[PromptIndex])
+    if (RETURN_KEY == buff[PromptIndex] || LINE_FEED == buff[PromptIndex]) {
+      //terminate string, advance index to indicate size
+      buff[PromptIndex++] = '\0';
+      NoReturn = FALSE;
       break;
+    }
   }
-  VOID * ptr = AllocateZeroPool(MAX_PROMT_INPUT_SZ);
+
+  *ppReturnValue = NULL;
+  while (NoReturn) {
+    //we ran out of buffer before user pressed Enter
+    //consume stdin until Enter
+    ThrowAway = _getch();
+
+    if (RETURN_KEY == ThrowAway || LINE_FEED == ThrowAway) {
+      ReturnCode = EFI_BUFFER_TOO_SMALL;
+      goto Finish;
+    }
+  }
+
+  VOID * ptr = AllocateZeroPool((PromptIndex * (sizeof(CHAR16))));
   if (NULL == ptr) {
     ReturnCode = EFI_OUT_OF_RESOURCES;
     goto Finish;
   }
+
   *ppReturnValue = AsciiStrToUnicodeStr(buff, ptr);
-  if (ShowInput)
-    Print(*ppReturnValue);
+
 Finish:
   Print(L"\n");
   NVDIMM_EXIT_I64(ReturnCode);
@@ -1995,7 +1743,7 @@ UnicodeSPrint(
 {
   VA_LIST Marker;
   VA_START(Marker, FormatString);
-  return vswprintf_s(StartOfBuffer, BufferSize / sizeof(CHAR16), FormatString, Marker);
+  return os_vswprintf(StartOfBuffer, (size_t)(BufferSize / sizeof(CHAR16)), FormatString, Marker);
 }
 
 /**
@@ -2041,7 +1789,7 @@ UnicodeVSPrint(
   IN  VA_LIST        Marker
 )
 {
-  return vswprintf_s(StartOfBuffer, BufferSize / sizeof(CHAR16), FormatString, Marker);
+  return os_vswprintf(StartOfBuffer, (size_t)(BufferSize / sizeof(CHAR16)), FormatString, Marker);
 }
 
 /**
@@ -2088,11 +1836,8 @@ AsciiSPrint(
 {
   VA_LIST Marker;
   VA_START(Marker, FormatString);
-  return vsnprintf_s(StartOfBuffer, BufferSize
-#ifdef _MSC_VER 
-    , BufferSize - 1
-#endif
-    , FormatString, Marker);
+
+  return os_vsnprintf(StartOfBuffer, (size_t)BufferSize, FormatString, Marker);
 }
 /**
 Returns the number of characters that would be produced by if the formatted
@@ -2116,17 +1861,17 @@ SPrintLength(
 {
   static const int nBuffSprintLenSize = 1024;
   static wchar_t evalSprintBuff[1024];
-  return vswprintf_s(evalSprintBuff, nBuffSprintLenSize, FormatString, Marker);
+  return os_vswprintf(evalSprintBuff, nBuffSprintLenSize, FormatString, Marker);
 }
 /**
-  Makes Bios emulated pass thru call and returns the values
+Makes Bios emulated pass thru call and returns the values
 
-  @param[in]  pDimm    pointer to current Dimm
-  @param[out] pBsrValue   Value from passthru
+@param[in]  pDimm    pointer to current Dimm
+@param[out] pBsrValue   Value from passthru
 
-  @retval EFI_SUCCESS  The count was returned properly
-  @retval EFI_INVALID_PARAMETER One or more parameters are NULL
-  @retval Other errors failure of FW commands
+@retval EFI_SUCCESS  The count was returned properly
+@retval EFI_INVALID_PARAMETER One or more parameters are NULL
+@retval Other errors failure of FW commands
 **/
 
 EFI_STATUS

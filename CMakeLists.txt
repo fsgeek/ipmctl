@@ -9,19 +9,43 @@ set(CMAKE_VERBOSE_MAKEFILE on)
 
 get_filename_component(ROOT ./ ABSOLUTE)
 
-message(BUILD_TYPE: ${CMAKE_BUILD_TYPE})
-set(LIBIPMCTL_VERSION_MAJOR 2)
-set(LIBIPMCTL_VERSION_MINOR 0)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/CMake/Find")
+
+set(LIBIPMCTL_VERSION_MAJOR 3)
+set(LIBIPMCTL_VERSION_MINOR 1)
 set(LIBIPMCTL_VERSION_PATCH 0)
 set(LIBIPMCTL_VERSION_STRING ${LIBIPMCTL_VERSION_MAJOR}.${LIBIPMCTL_VERSION_MINOR}.${LIBIPMCTL_VERSION_PATCH})
 
-message(VERSION: ${BUILDNUM})
+set(IPMCTL_VERSION_MAJOR 01)
+set(IPMCTL_VERSION_MINOR 00)
+set(IPMCTL_VERSION_PATCH 00)
 
+set(IPMCTL_SPEC_VERSION_MAJOR 2)
+set(IPMCTL_SPEC_VERSION_MINOR 01)
+set(IPMCTL_DRAFT "-draft")
+set(IPMCTL_SPEC_VERSION_STRING ${IPMCTL_SPEC_VERSION_MAJOR}.${IPMCTL_SPEC_VERSION_MINOR}${IPMCTL_DRAFT})
 
-if(NOT BUILDNUM)
-	set(BUILDNUM "5.5.5.5555")
-	message(BUILDNUM: ${BUILDNUM})
+if(BUILDNUM)
+	set(IPMCTL_VERSION_STRING ${BUILDNUM})
+else()
+	find_package(Git)
+	if(GIT_FOUND)
+		execute_process(COMMAND ${GIT_EXECUTABLE} describe --tag --dirty
+			OUTPUT_VARIABLE IPMCTL_VERSION_STRING
+			RESULT_VARIABLE GIT_RETURN_CODE
+			)
+		# strip leading string in git tag
+		string(REGEX MATCH "([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)" IPMCTL_VERSION_STRING "${IPMCTL_VERSION_STRING}")
+		# strip ending newline
+		string(REGEX REPLACE "\n" "" IPMCTL_VERSION_STRING "${IPMCTL_VERSION_STRING}")
+	endif()
+
+	if(NOT GIT_FOUND OR ${GIT_RETURN_CODE})
+		set(IPMCTL_VERSION_STRING ${IPMCTL_VERSION_MAJOR}.${IPMCTL_VERSION_MINOR}.${IPMCTL_VERSION_PATCH}.9999)
+	endif()
 endif()
+
+message(VERSION: ${IPMCTL_VERSION_STRING})
 
 if(RELEASE)
 	set(BUILD_TYPE release)
@@ -32,9 +56,10 @@ else()
 	set(CMAKE_BUILD_TYPE Debug)
 	add_definitions(
 		-DDEBUG_BUILD
-    -DPLAYBACK_RECORD_SUPPORTED
 		)
 endif()
+
+message(BUILD_TYPE: ${CMAKE_BUILD_TYPE})
 
 if(BUILD_STATIC)
 	set(LIB_TYPE STATIC)
@@ -45,20 +70,26 @@ endif()
 if(ESX_BUILD)
 	set(OS_TYPE esx)
 	set(FILE_PREFIX esx)
+	find_package(PythonInterp REQUIRED)
 elseif(UNIX)
 	set(LNX_BUILD 1)
 	set(OS_TYPE linux)
 	set(FILE_PREFIX lnx)
 
 	find_package(Threads REQUIRED)
-	find_package(PkgConfig)
+	find_package(PkgConfig REQUIRED)
+	find_package(PythonInterp REQUIRED)
+	find_package(asciidoctor)
+	find_package(asciidoc)
 	pkg_check_modules(NDCTL REQUIRED libndctl>=58.2)
 	pkg_check_modules(SYSTEMD systemd)
-	pkg_check_modules(LIBSAFEC REQUIRED safec-3.3>=03032018.0-g570fa5)
 elseif(MSVC)
 	set(WIN_BUILD 1)
 	set(OS_TYPE win)
 	set(FILE_PREFIX win)
+	find_package(PythonInterp REQUIRED)
+	find_package(asciidoctor)
+	find_package(asciidoc)
 endif()
 
 message(BUILD_TYPE: ${CMAKE_BUILD_TYPE})
@@ -80,33 +111,37 @@ if(INTERNAL_MFG)
         include(CMake/mfg.cmake)
 endif()
 
-if(EXISTS "${ROOT}/CMake/internal.cmake")
-        include("${ROOT}/CMake/internal.cmake")
-endif()
-
 #----------------------------------------------------------------------------------------------------
 # Project wide defines and flags
 #----------------------------------------------------------------------------------------------------
 add_definitions(
 	-DOS_BUILD
-	-D__VERSION_NUMBER__=${BUILDNUM}
+	-DPCD_CACHE_ENABLED
+	-D__VERSION_NUMBER__=${IPMCTL_VERSION_STRING}
+	-DPLAYBACK_RECORD_SUPPORTED
 	)
 
+# Promote warnings to errors only for release builds
 if(MSVC)
-	set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O2")
-	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2")
+	set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O2 /WX")
+	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /WX")
 	set(CMAKE_C_FLAGS_DEBUG_ "${CMAKE_C_FLAGS_DEBUG} /Od")
 	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Od")
 else()
 	set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O2 -fno-strict-aliasing -D_FORTIFY_SOURCE=2")
 	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O2 -fno-strict-aliasing -D_FORTIFY_SOURCE=2")
+	if(LNX_BUILD)
+		#A few warnings yet to resolve under esx
+		set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -Werror")
+		set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Werror")
+	endif()
 	set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -ggdb")
 	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -ggdb")
 endif()
 
 if(UNIX)
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DNO_MSABI_VA_FUNCS -std=c99 -Wformat -Wformat-security -D_XOPEN_SOURCE=500 -Wall -Wfatal-errors -MMD -fPIC")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wformat -Wformat-security -D_XOPEN_SOURCE=500 -Drestrict=__restrict__ -Wall -Wfatal-errors -MMD -fPIC")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DNO_MSABI_VA_FUNCS -std=c99 -Wformat -Wformat-security -D_XOPEN_SOURCE=500 -Wall -Wfatal-errors -MMD -fPIC -fno-strict-aliasing")
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wformat -Wformat-security -D_XOPEN_SOURCE=500 -Drestrict=__restrict__ -Wall -Wfatal-errors -MMD -fPIC -fno-strict-aliasing")
 	set(CMAKE_SHARED_LINKER_FLAGS "-z noexecstack -z relro -z now -pie")
 elseif(MSVC)
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /GS /DynamicBase /sdl")
@@ -115,10 +150,28 @@ elseif(MSVC)
 endif()
 
 if(LNX_BUILD)
+	if("${CMAKE_INSTALL_DATAROOTDIR}" STREQUAL "/usr/share")
+		# Workaround for the RPM build cause the %{_datarootdir} is already prefixed
+		set(INI_INSTALL_FILEPATH "${CMAKE_INSTALL_DATAROOTDIR}")
+	else()
+		if("${CMAKE_INSTALL_PREFIX}" STREQUAL "/")
+			# In case the CMAKE_INSTALL_PREFIX equals "/" for <dir> other than the SYSCONFDIR and LOCALSTATEDIR,
+			# the value of CMAKE_INSTALL_<dir> is prefixed with usr/ if it is not user-specified as an absolute path.
+			set(CMAKE_INSTALL_PREFIX "/usr")
+			message("CMAKE_INSTALL_PREFIX value changed to: ${CMAKE_INSTALL_PREFIX}")
+		endif()
+		if(NOT DEFINED CMAKE_INSTALL_DATAROOTDIR)
+			set(CMAKE_INSTALL_DATAROOTDIR "share")
+			message("CMAKE_INSTALL_DATAROOTDIR not defined. Creating a new definition with value: ${CMAKE_INSTALL_DATAROOTDIR}")
+		endif()
+		set(INI_INSTALL_FILEPATH "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATAROOTDIR}")
+	endif()
+	message("INI_INSTALL_FILEPATH definition create with value: ${INI_INSTALL_FILEPATH}")
 	add_definitions(
 		-D_GNU_SOURCE
 		-D__LINUX__
 		-DHAVE_C99
+		-DINI_INSTALL_FILEPATH="${INI_INSTALL_FILEPATH}/ipmctl/"
 		)
 	if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_GREATER 4.9)
 		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fstack-protector-strong")
@@ -128,31 +181,53 @@ if(LNX_BUILD)
 	endif()
 endif()
 
+if(MSVC)
+	if(VCREDIST_STATIC)
+		# Force vcredist to be linked static
+		# Keep this after all other compiler flag setup
+		set(CompilerFlags
+				CMAKE_CXX_FLAGS
+				CMAKE_CXX_FLAGS_DEBUG
+				CMAKE_CXX_FLAGS_RELEASE
+				CMAKE_CXX_FLAGS_RELWITHDEBINFO
+				CMAKE_C_FLAGS
+				CMAKE_C_FLAGS_DEBUG
+				CMAKE_C_FLAGS_RELEASE
+				CMAKE_C_FLAGS_RELWITHDEBINFO
+				)
+		foreach(CompilerFlag ${CompilerFlags})
+		  string(REPLACE "/MD" "/MT" ${CompilerFlag} "${${CompilerFlag}}")
+		endforeach()
+		message("VCREDIST: STATIC")
+	else()
+		message("VCREDIST: SHARED")
+	endif()
+endif()
 #----------------------------------------------------------------------------------------------------
 # OS driver interface library
 #----------------------------------------------------------------------------------------------------
 
 if(MSVC)
 	FILE(GLOB OS_INTERFACE_SOURCE_FILES
+		src/os/os_str.c
 		src/os/os_common.c
 		src/os/win/win_scm2_ioctl.c
 		src/os/win/win_scm2_passthrough.c
 		src/os/win/win_scm2_ioctl_passthrough.c
 		src/os/win/win_common.c
 		src/os/win/win_api.c
-		src/os/win/win_adapter_acpi_events.c
 		src/os/win/win_scm2_adapter.c
 		src/os/win/win_system.c
 		)
 elseif(UNIX)
 	FILE(GLOB OS_INTERFACE_SOURCE_FILES
+		src/os/os_str.c
 		src/os/os_common.c
 		src/os/${OS_TYPE}/${FILE_PREFIX}_adapter_passthrough.c
 		src/os/${OS_TYPE}/${FILE_PREFIX}_acpi.c
 		src/os/${OS_TYPE}/${FILE_PREFIX}_common.c
 		src/os/${OS_TYPE}/${FILE_PREFIX}_api.c
 		src/os/${OS_TYPE}/${FILE_PREFIX}_adapter.c
-		src/os/${OS_TYPE}/${FILE_PREFIX}_adapter_acpi_events.c
 		src/os/${OS_TYPE}/${FILE_PREFIX}_system.c
 		)
 endif()
@@ -163,19 +238,12 @@ target_link_libraries(ipmctl_os_interface
 	${CMAKE_THREAD_LIBS_INIT}
 	)
 
-if(LNX_BUILD)
-	target_link_libraries(ipmctl_os_interface
-		${LIBSAFEC_LIBRARIES}
-		)
-endif()
-
 target_include_directories(ipmctl_os_interface PUBLIC
 	src/os
 	src/os/${OS_TYPE}
-	DcpmemPkg/common
+	DcpmPkg/common
 	src/os/nvm_api
 	src/os/s_string
-	${LIBSAFEC_INCLUDE_DIRS}
 	)
 # TODO: Remove the backup winioctl.h file when the 17650+ Windows SDK is publicly released
 if (MSVC)
@@ -207,76 +275,84 @@ file(GLOB LIBIPMCTL_SOURCE_FILES
 	src/os/nvm_api/nvm_management.c
 	src/os/nvm_api/nvm_output_parsing.c
 	src/os/s_string/s_str.c
-	DcpmemPkg/cli/NvmDimmCli.c
-	DcpmemPkg/cli/CommandParser.c
-	DcpmemPkg/cli/Common.c
-	DcpmemPkg/cli/ShowAcpiCommand.c
-	DcpmemPkg/cli/ShowSensorCommand.c
-	DcpmemPkg/cli/ShowDimmsCommand.c
-	DcpmemPkg/cli/ShowSocketsCommand.c
-	DcpmemPkg/cli/ShowMemoryResourcesCommand.c
-	DcpmemPkg/cli/ShowSystemCapabilitiesCommand.c
-	DcpmemPkg/cli/ShowFirmwareCommand.c
-	DcpmemPkg/cli/ShowPcdCommand.c
-	DcpmemPkg/cli/DeletePcdCommand.c
-	DcpmemPkg/cli/ShowRegionsCommand.c
-	DcpmemPkg/cli/CreateGoalCommand.c
-	DcpmemPkg/cli/ShowGoalCommand.c
-	DcpmemPkg/cli/DeleteGoalCommand.c
-	DcpmemPkg/cli/ShowErrorCommand.c
-	DcpmemPkg/cli/DumpDebugCommand.c
-	DcpmemPkg/cli/StartDiagnosticCommand.c
-	DcpmemPkg/cli/ShowPreferencesCommand.c
-	DcpmemPkg/cli/ShowTopologyCommand.c
-	DcpmemPkg/cli/SetPreferencesCommand.c
-	DcpmemPkg/cli/SetSensorCommand.c
-	DcpmemPkg/cli/LoadGoalCommand.c
-	DcpmemPkg/cli/DumpGoalCommand.c
-	DcpmemPkg/cli/SetDimmCommand.c
-	DcpmemPkg/cli/LoadCommand.c
-	DcpmemPkg/cli/DeleteDimmCommand.c
+	DcpmPkg/cli/NvmDimmCli.c
+	DcpmPkg/cli/CommandParser.c
+	DcpmPkg/cli/Common.c
+	DcpmPkg/cli/ShowAcpiCommand.c
+	DcpmPkg/cli/ShowSensorCommand.c
+	DcpmPkg/cli/ShowDimmsCommand.c
+	DcpmPkg/cli/ShowSocketsCommand.c
+	DcpmPkg/cli/ShowMemoryResourcesCommand.c
+	DcpmPkg/cli/ShowSystemCapabilitiesCommand.c
+	DcpmPkg/cli/ShowFirmwareCommand.c
+	DcpmPkg/cli/ShowPcdCommand.c
+	DcpmPkg/cli/DeletePcdCommand.c
+	DcpmPkg/cli/ShowRegionsCommand.c
+	DcpmPkg/cli/CreateGoalCommand.c
+	DcpmPkg/cli/ShowGoalCommand.c
+	DcpmPkg/cli/DeleteGoalCommand.c
+	DcpmPkg/cli/ShowErrorCommand.c
+	DcpmPkg/cli/DumpDebugCommand.c
+	DcpmPkg/cli/StartDiagnosticCommand.c
+	DcpmPkg/cli/ShowPreferencesCommand.c
+	DcpmPkg/cli/ShowTopologyCommand.c
+	DcpmPkg/cli/SetPreferencesCommand.c
+	DcpmPkg/cli/SetSensorCommand.c
+	DcpmPkg/cli/LoadGoalCommand.c
+	DcpmPkg/cli/DumpGoalCommand.c
+	DcpmPkg/cli/SetDimmCommand.c
+	DcpmPkg/cli/LoadCommand.c
+	DcpmPkg/cli/DeleteDimmCommand.c
 	src/os/cli_cmds/DumpSupportCommand.c
-	DcpmemPkg/cli/LoadRecoverCommand.c
-	DcpmemPkg/cli/ShowRegisterCommand.c
-	DcpmemPkg/cli/StartFormatCommand.c
-	DcpmemPkg/cli/ShowEventCommand.c
-	DcpmemPkg/cli/SetEventCommand.c
-	DcpmemPkg/cli/ShowPerformanceCommand.c
-	DcpmemPkg/cli/ShowHostServerCommand.c
-	DcpmemPkg/cli/ShowCmdAccessPolicyCommand.c
-	DcpmemPkg/common/FwUtility.c
-	DcpmemPkg/common/Utility.c
-	DcpmemPkg/common/NvmTables.c
-	DcpmemPkg/common/ShowAcpi.c
-	DcpmemPkg/common/NvmStatus.c
-	DcpmemPkg/common/NvmHealth.c
-	DcpmemPkg/common/LbaCommon.c
-	DcpmemPkg/common/Convert.c
-	DcpmemPkg/common/PcdCommon.c
-	DcpmemPkg/common/OsCommon.c
-	DcpmemPkg/common/DataSet.c
-	DcpmemPkg/common/Show.c
-	DcpmemPkg/driver/Protocol/Driver/NvmDimmConfig.c
-	DcpmemPkg/driver/NvmDimmDriver.c
-	DcpmemPkg/driver/Core/Dimm.c
-	DcpmemPkg/driver/Core/Namespace.c
-	DcpmemPkg/driver/Core/NvmSecurity.c
-	DcpmemPkg/driver/Core/Region.c
-	DcpmemPkg/driver/Core/Btt.c
-	DcpmemPkg/driver/Core/Pfn.c
-	DcpmemPkg/driver/Core/Diagnostics/ConfigDiagnostic.c
-	DcpmemPkg/driver/Core/Diagnostics/CoreDiagnostics.c
-	DcpmemPkg/driver/Core/Diagnostics/FwDiagnostic.c
-	DcpmemPkg/driver/Core/Diagnostics/QuickDiagnostic.c
-	DcpmemPkg/driver/Core/Diagnostics/SecurityDiagnostic.c
-	DcpmemPkg/driver/Protocol/Device/NvmFirmwareManagement.c
-	DcpmemPkg/driver/Protocol/Device/StorageSecurityCommand.c
-	DcpmemPkg/driver/Protocol/Namespace/NvmDimmBlockIo.c
-	DcpmemPkg/driver/Utils/PlatformConfigData.c
-	DcpmemPkg/driver/Utils/AcpiParsing.c
-	DcpmemPkg/driver/Utils/Interleave.c
-	DcpmemPkg/driver/Utils/SmbiosUtility.c
-	DcpmemPkg/driver/Utils/DumpLoadPools.c
+	DcpmPkg/cli/ShowRegisterCommand.c
+	DcpmPkg/cli/StartFormatCommand.c
+	DcpmPkg/cli/ShowPerformanceCommand.c
+	DcpmPkg/cli/ShowHostServerCommand.c
+	DcpmPkg/cli/ShowCmdAccessPolicyCommand.c
+	DcpmPkg/cli/StartSessionCommand.c
+	DcpmPkg/cli/StopSessionCommand.c
+	DcpmPkg/cli/LoadSessionCommand.c
+	DcpmPkg/cli/ShowSessionCommand.c
+	DcpmPkg/cli/DumpSessionCommand.c
+	DcpmPkg/common/FwUtility.c
+	DcpmPkg/common/Utility.c
+	DcpmPkg/common/NvmTables.c
+	DcpmPkg/common/ShowAcpi.c
+	DcpmPkg/common/NvmStatus.c
+	DcpmPkg/common/NvmHealth.c
+	DcpmPkg/common/LbaCommon.c
+	DcpmPkg/common/Convert.c
+	DcpmPkg/common/PcdCommon.c
+	DcpmPkg/common/OsCommon.c
+	DcpmPkg/common/DataSet.c
+	DcpmPkg/common/Printer.c
+	DcpmPkg/common/Strings.c
+	DcpmPkg/common/Nlog.c
+	DcpmPkg/common/ReadRunTimePreferences.c
+	DcpmPkg/driver/Protocol/Driver/NvmDimmConfig.c
+	DcpmPkg/driver/NvmDimmDriver.c
+	DcpmPkg/driver/Core/Dimm.c
+	DcpmPkg/driver/Core/Namespace.c
+	DcpmPkg/driver/Core/NvmSecurity.c
+	DcpmPkg/driver/Core/Region.c
+	DcpmPkg/driver/Core/Btt.c
+	DcpmPkg/driver/Core/Pfn.c
+	DcpmPkg/driver/Core/Diagnostics/ConfigDiagnostic.c
+	DcpmPkg/driver/Core/Diagnostics/CoreDiagnostics.c
+	DcpmPkg/driver/Core/Diagnostics/FwDiagnostic.c
+	DcpmPkg/driver/Core/Diagnostics/QuickDiagnostic.c
+	DcpmPkg/driver/Core/Diagnostics/SecurityDiagnostic.c
+	DcpmPkg/driver/Protocol/Device/NvmFirmwareManagement.c
+	DcpmPkg/driver/Protocol/Namespace/NvmDimmBlockIo.c
+	DcpmPkg/driver/Utils/PlatformConfigData.c
+	DcpmPkg/driver/Utils/AcpiParsing.c
+	DcpmPkg/driver/Utils/ProcessorAndTopologyInfo.c
+	DcpmPkg/driver/Utils/Interleave.c
+	DcpmPkg/driver/Utils/SmbiosUtility.c
+	DcpmPkg/driver/Utils/DumpLoadRegions.c
+	DcpmPkg/common/Pbr.c
+	DcpmPkg/common/PbrDcpmm.c
+	DcpmPkg/common/PbrOs.c
 	MdePkg/Library/UefiDevicePathLib/UefiDevicePathLib.c
 	MdePkg/Library/UefiDevicePathLib/DevicePathUtilities.c
 	MdePkg/Library/UefiDevicePathLib/DevicePathToText.c
@@ -299,22 +375,18 @@ file(GLOB LIBIPMCTL_SOURCE_FILES
 	MdePkg/Library/BaseLib/DivU64x32.c
 	${LIBIPMCTL_MFG_FILES}
 	)
-
+if(EXISTS "${ROOT}/CMake/internal.cmake")
+        include("${ROOT}/CMake/internal.cmake")
+endif()
 # OS Files
 list(APPEND LIBIPMCTL_SOURCE_FILES
 	src/os/efi_shim/${FILE_PREFIX}_efi_api.c
 	)
 
-if(NOT MSVC)
-	list(APPEND LIBIPMCTL_SOURCE_FILES
-	MdePkg/Library/UefiMemoryAllocationLib/AllocTracer.c
-	)
-endif()
-
 add_library(ipmctl ${LIB_TYPE} ${LIBIPMCTL_SOURCE_FILES})
 
 target_include_directories(ipmctl PUBLIC
-	DcpmemPkg/cli
+	DcpmPkg/cli
 	src/os
 	src/os/efi_shim
 	src/os/ini
@@ -322,14 +394,14 @@ target_include_directories(ipmctl PUBLIC
 	src/os/nvm_api
 	src/os/s_string
 	src/os/cli_cmds
-	DcpmemPkg/common
-	DcpmemPkg/driver
-	DcpmemPkg/driver/Utils
-	DcpmemPkg/driver/Protocol/Driver
-	DcpmemPkg/driver/Core
-	DcpmemPkg/driver/Protocol/Namespace
-	DcpmemPkg/driver/Protocol/Device
-	DcpmemPkg/driver/Core/Diagnostics
+	DcpmPkg/common
+	DcpmPkg/driver
+	DcpmPkg/driver/Utils
+	DcpmPkg/driver/Protocol/Driver
+	DcpmPkg/driver/Core
+	DcpmPkg/driver/Protocol/Namespace
+	DcpmPkg/driver/Protocol/Device
+	DcpmPkg/driver/Core/Diagnostics
 	MdePkg
 	MdePkg/Include
 	MdePkg/Include/Protocol
@@ -343,8 +415,7 @@ target_include_directories(ipmctl PUBLIC
 	MdeModulePkg
 	MdeModulePkg/Include
 	MdeModulePkg/Include/Library
-	${LIBSAFEC_INCLUDE_DIRS}
-        )
+	)
 
 if(MSVC)
 	set_target_properties(ipmctl PROPERTIES PREFIX "lib")
@@ -355,14 +426,14 @@ if(MSVC)
 	SET_SOURCE_FILES_PROPERTIES(src/os/ini/ini.c PROPERTIES COMPILE_FLAGS -D_CRT_SECURE_NO_WARNINGS)
 	SET_SOURCE_FILES_PROPERTIES(src/os/efi_shim/os_efi_preferences.c PROPERTIES COMPILE_FLAGS -D_CRT_SECURE_NO_WARNINGS)
 	SET_SOURCE_FILES_PROPERTIES(src/os/nvm_api/nvm_management.c PROPERTIES COMPILE_FLAGS -D_CRT_SECURE_NO_WARNINGS)
-	SET_SOURCE_FILES_PROPERTIES(DcpmemPkg/cli/Common.c PROPERTIES COMPILE_FLAGS -D_CRT_SECURE_NO_WARNINGS)
+	SET_SOURCE_FILES_PROPERTIES(DcpmPkg/cli/Common.c PROPERTIES COMPILE_FLAGS -D_CRT_SECURE_NO_WARNINGS)
 	SET_SOURCE_FILES_PROPERTIES(src/os/nvm_api/nvm_output_parsing.c PROPERTIES COMPILE_FLAGS -D_CRT_SECURE_NO_WARNINGS)
 	SET_SOURCE_FILES_PROPERTIES(src/os/efi_shim/os_efi_shell_parameters_protocol.c PROPERTIES COMPILE_FLAGS -D_CRT_SECURE_NO_WARNINGS)
 	SET_SOURCE_FILES_PROPERTIES(src/os/cli_cmds/DumpSupportCommand.c PROPERTIES COMPILE_FLAGS -D_CRT_SECURE_NO_WARNINGS)
 else()
 	target_compile_options(ipmctl PRIVATE
 		-include AutoGen.h
-		)
+	)
 endif()
 
 add_dependencies(ipmctl
@@ -403,68 +474,31 @@ target_include_directories(ipmctl-bin PUBLIC
 	src/os
 	src/os/nvm_api
 	src/os/ini
-	${LIBSAFEC_INCLUDE_DIRS}
 	)
 
 set_target_properties(ipmctl-bin
 	PROPERTIES OUTPUT_NAME ipmctl
 	)
 
+if ((ASCIIDOCTOR_FOUND OR A2X_FOUND) AND LNX_BUILD)
+	add_dependencies(ipmctl-bin
+		manpage
+		)
+endif()
+
 if(MSVC)
 	set_target_properties(ipmctl-bin PROPERTIES LINK_FLAGS "/STACK:3000000")
 else()
 	target_compile_options(ipmctl-bin PRIVATE "-fPIE")
-endif()
-
-#---------------------------------------------------------------------------------------------------
-# Monitor service executable
-#---------------------------------------------------------------------------------------------------
-if (NOT ESX_BUILD)
-	FILE(GLOB IPMCTL_MONITOR_SOURCE_FILES
-		src/os/monitor/NvmMonitorBase.cpp
-		src/os/monitor/PerformanceMonitor.cpp
-		src/os/monitor/EventMonitor.cpp
-		src/os/monitor/AcpiEventMonitor.cpp
-		)
-
-	if(MSVC)
-		list(APPEND IPMCTL_MONITOR_SOURCE_FILES
-			src/os/monitor/win_main.cpp
-			src/os/monitor/win_service.cpp
-			)
-	else()
-		list(APPEND IPMCTL_MONITOR_SOURCE_FILES
-			src/os/monitor/lnx_main.cpp
-			)
-	endif()
-
-	add_executable(ipmctl-monitor ${IPMCTL_MONITOR_SOURCE_FILES})
-
-	target_link_libraries(ipmctl-monitor
-		ipmctl
-		${LIBSAFEC_LIBRARIES}
-		)
-
-	target_include_directories(ipmctl-monitor PUBLIC
-		src/os
-		src/os/nvm_api
-		src/os/ini
-		DcpmemPkg/common
-		${LIBSAFEC_INCLUDE_DIRS}
-		)
-
-if(UNIX)
-        target_compile_options(ipmctl-monitor PRIVATE "-fPIE")
-endif()
-
+    set_target_properties(ipmctl-bin PROPERTIES LINK_FLAGS "-pie")
 endif()
 
 #----------------------------------------------------------------------------------------------------
 # Generate String Definitions
 #----------------------------------------------------------------------------------------------------
 set(STRING_DEFS_INPUT_FILES
-	${ROOT}/DcpmemPkg/common/NvmStatus.uni
-	${ROOT}/DcpmemPkg/driver/Core/Diagnostics/DiagnosticsMessages.uni
+	${ROOT}/DcpmPkg/common/NvmStatus.uni
+	${ROOT}/DcpmPkg/driver/Core/Diagnostics/DiagnosticsMessages.uni
 	${ROOT}/src/os/efi_shim/os_efi_hii_auto_gen_strings.py
 	)
 
@@ -477,7 +511,7 @@ add_custom_target(stringdefs ALL
 	DEPENDS ${STRING_DEFS_OUTPUT_FILES} ${STRING_DEFS_INPUT_FILES})
 
 add_custom_command(OUTPUT ${STRING_DEFS_OUTPUT_FILES}
-	COMMAND python ${ROOT}/src/os/efi_shim/os_efi_hii_auto_gen_strings.py
+	COMMAND ${PYTHON_EXECUTABLE} ${ROOT}/src/os/efi_shim/os_efi_hii_auto_gen_strings.py
 	COMMENT "Generating String Definitions"
 	DEPENDS ${STRING_DEFS_INPUT_FILES}
 	)
@@ -498,7 +532,7 @@ endif()
 
 add_custom_command(OUTPUT ${OUTPUT_DIR}/ipmctl_default.conf
 	COMMAND ${CMAKE_C_COMPILER} ${MY_CMAKE_SYSROOT} ${PRECOMPILER_FLAG} ${ROOT}/src/os/ini/ipmctl_default.c > ${ROOT}/src/os/ini/ipmctl_default.i
-	COMMAND python ${ROOT}/src/os/ini/ini_auto_gen_default_config.py ${ROOT}/src/os/ini/ipmctl_default.i ${OUTPUT_DIR}/ipmctl_default.conf
+	COMMAND ${PYTHON_EXECUTABLE} ${ROOT}/src/os/ini/ini_auto_gen_default_config.py ${ROOT}/src/os/ini/ipmctl_default.i ${OUTPUT_DIR}/ipmctl_default.conf
 	COMMAND ${CMAKE_COMMAND} -E remove -f ${ROOT}/src/os/ini/ipmctl_default.i
 	COMMENT "Generating INI Default Config File"
 	)
@@ -510,11 +544,14 @@ FILE(GLOB NVM_HEADERS
 	src/os/nvm_api/export_api.h
 	src/os/nvm_api/nvm_management.h
 	src/os/nvm_api/nvm_types.h
-	DcpmemPkg/common/NvmStatusValues.h
+	DcpmPkg/common/NvmSharedDefs.h
 	)
 
 FILE(COPY ${NVM_HEADERS}
-       DESTINATION ${OUTPUT_DIR})
+	DESTINATION ${OUTPUT_DIR})
+
+FILE(COPY install/linux/logrotate/ipmctl.conf
+	DESTINATION ${OUTPUT_DIR})
 
 if(LNX_BUILD)
 	include(GNUInstallDirs)
@@ -524,24 +561,12 @@ if(LNX_BUILD)
 
 	configure_file(${ROOT}/install/linux/libipmctl.pc.in ${OUTPUT_DIR}/libipmctl.pc @ONLY)
 
-	if(DEFINED INSTALL_UNITDIR)
-		set(INSTALL_SYSTEMDSYSTEMUNITDIR ${INSTALL_UNITDIR})
-	else()
-		if(SYSTEMD_FOUND)
-			if(CMAKE_VERSION VERSION_LESS 3.4.3)
-				set(INSTALL_SYSTEMDSYSTEMUNITDIR "/usr/lib/systemd/system")
-			else()
-				pkg_get_variable(INSTALL_SYSTEMDSYSTEMUNITDIR systemd systemdsystemunitdir)
-			endif()
-		endif()
-	endif()
-
 	if(BUILD_STATIC)
-		install(TARGETS ipmctl-bin ipmctl-monitor
+		install(TARGETS ipmctl-bin
 			RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 			)
 	else()
-		install(TARGETS ipmctl-bin ipmctl ipmctl-monitor
+		install(TARGETS ipmctl-bin ipmctl
 			RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 			LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 			)
@@ -552,7 +577,7 @@ if(LNX_BUILD)
 		)
 
 	install(FILES ${OUTPUT_DIR}/ipmctl_default.conf
-		DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}
+		DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/ipmctl
 		RENAME ipmctl.conf
 		)
 
@@ -566,34 +591,150 @@ if(LNX_BUILD)
 		DESTINATION ${CMAKE_INSTALL_LOCALSTATEDIR}/log
 		)
 
-	if(DEFINED INSTALL_SYSTEMDSYSTEMUNITDIR)
-		install (FILES src/os/monitor/ipmctl-monitor.service
-			DESTINATION ${INSTALL_SYSTEMDSYSTEMUNITDIR}
+	install(FILES ${OUTPUT_DIR}/ipmctl.conf
+		DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/logrotate.d
+		)
+
+	install(FILES ${OUTPUT_DIR}/libipmctl.pc
+		DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+		)
+
+	if(ASCIIDOCTOR_FOUND OR A2X_FOUND)
+		install(DIRECTORY ${OUTPUT_DIR}/manpage/
+			DESTINATION ${CMAKE_INSTALL_MANDIR}/man1
 			)
 	endif()
-
-	install(FILES ${OUTPUT_DIR}/libipmctl.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 endif()
 
 #----------------------------------------------------------------------------------------------------
 # Documentation
 #----------------------------------------------------------------------------------------------------
-# add a target to generate API documentation with Doxygen^M
 find_package(Doxygen)
-
 
 if(DOXYGEN_FOUND)
 
 #----------------------------------------------------------------------------------------------------
 # Generate NVM C API documentation with Doxygen
 #----------------------------------------------------------------------------------------------------
-	configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/os/docs/Doxyfile_api.in ${ROOT}/output/${BUILD_TYPE}/Doxyfile @ONLY)
+	configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/os/docs/Doxyfile_api.in ${CMAKE_BINARY_DIR}/docs/nvm_api/Doxyfile_nvm_api @ONLY)
 	add_custom_target(doc-api
-		${DOXYGEN_EXECUTABLE} ${ROOT}/output/${BUILD_TYPE}/Doxyfile
+		mkdir -p ${ROOT}/output/${BUILD_TYPE}/docs/nvm_api
+		COMMAND cp ${CMAKE_CURRENT_SOURCE_DIR}/Documentation/nvm_management_api/nvm_management_api_latex_header.tex ${CMAKE_BINARY_DIR}/docs/nvm_api/
+		COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_BINARY_DIR}/docs/nvm_api/Doxyfile_nvm_api
 		COMMAND make -C ${ROOT}/output/${BUILD_TYPE}/docs/nvm_api/latex pdf
-		WORKING_DIRECTORY ${ROOT}/output/${BUILD_TYPE}
+		WORKING_DIRECTORY ${ROOT}/output/${BUILD_TYPE}/docs/nvm_api
 		COMMENT "Generating API documentation with Doxygen" VERBATIM
 		)
+endif()
+
+#----------------------------------------------------------------------------------------------------
+# Generate man pages with asciidoctor
+#----------------------------------------------------------------------------------------------------
+if((ASCIIDOCTOR_FOUND OR A2X_FOUND) AND LNX_BUILD)
+	file(MAKE_DIRECTORY ${OUTPUT_DIR}/manpage)
+	file(MAKE_DIRECTORY ${OUTPUT_DIR}/docs)
+
+	set(DOCUMENTATION_INPUT_FILES
+		${ROOT}/Documentation/ipmctl/ipmctl.txt
+		${ROOT}/Documentation/ipmctl/DIMM_Discovery/ipmctl-show-device.txt
+		${ROOT}/Documentation/ipmctl/DIMM_Discovery/ipmctl-show-memory-resources.txt
+		${ROOT}/Documentation/ipmctl/DIMM_Discovery/ipmctl-show-socket.txt
+		${ROOT}/Documentation/ipmctl/DIMM_Discovery/ipmctl-show-system-capabilities.txt
+		${ROOT}/Documentation/ipmctl/DIMM_Discovery/ipmctl-show-topology.txt
+		${ROOT}/Documentation/ipmctl/Memory_Subsystem_Provisioning/ipmctl-change-device-passphrase.txt
+		${ROOT}/Documentation/ipmctl/Memory_Subsystem_Provisioning/ipmctl-change-device-security.txt
+		${ROOT}/Documentation/ipmctl/Memory_Subsystem_Provisioning/ipmctl-create-goal.txt
+		${ROOT}/Documentation/ipmctl/Memory_Subsystem_Provisioning/ipmctl-delete-goal.txt
+		${ROOT}/Documentation/ipmctl/Memory_Subsystem_Provisioning/ipmctl-dump-goal.txt
+		${ROOT}/Documentation/ipmctl/Memory_Subsystem_Provisioning/ipmctl-enable-device-security.txt
+		${ROOT}/Documentation/ipmctl/Memory_Subsystem_Provisioning/ipmctl-erase-device-data.txt
+		${ROOT}/Documentation/ipmctl/Memory_Subsystem_Provisioning/ipmctl-load-goal.txt
+		${ROOT}/Documentation/ipmctl/Memory_Subsystem_Provisioning/ipmctl-show-goal.txt
+		${ROOT}/Documentation/ipmctl/Persistent_Memory_Provisioning/ipmctl-show-region.txt
+		${ROOT}/Documentation/ipmctl/Instrumentation/ipmctl-change-sensor.txt
+		${ROOT}/Documentation/ipmctl/Instrumentation/ipmctl-show-performance.txt
+		${ROOT}/Documentation/ipmctl/Instrumentation/ipmctl-show-sensor.txt
+		${ROOT}/Documentation/ipmctl/Support_and_Maintenance/ipmctl-change-preferences.txt
+		${ROOT}/Documentation/ipmctl/Support_and_Maintenance/ipmctl-dump-support-data.txt
+		${ROOT}/Documentation/ipmctl/Support_and_Maintenance/ipmctl-help.txt
+		${ROOT}/Documentation/ipmctl/Support_and_Maintenance/ipmctl-modify-device.txt
+		${ROOT}/Documentation/ipmctl/Support_and_Maintenance/ipmctl-show-firmware.txt
+		${ROOT}/Documentation/ipmctl/Support_and_Maintenance/ipmctl-show-host.txt
+		${ROOT}/Documentation/ipmctl/Support_and_Maintenance/ipmctl-show-preferences.txt
+		${ROOT}/Documentation/ipmctl/Support_and_Maintenance/ipmctl-update-firmware.txt
+		${ROOT}/Documentation/ipmctl/Support_and_Maintenance/ipmctl-version.txt
+		${ROOT}/Documentation/ipmctl/Debug/ipmctl-dump-debug-log.txt
+		${ROOT}/Documentation/ipmctl/Debug/ipmctl-inject-error.txt
+		${ROOT}/Documentation/ipmctl/Debug/ipmctl-start-diagnostic.txt
+#		${ROOT}/Documentation/ipmctl/Debug/ipmctl-diagnostic-events.txt
+		${ROOT}/Documentation/ipmctl/Debug/ipmctl-show-acpi.txt
+		${ROOT}/Documentation/ipmctl/Debug/ipmctl-show-error-log.txt
+		)
+
+	set(MANPAGE_OUTPUT_FILES
+		${OUTPUT_DIR}/manpage/ipmctl.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-device.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-memory-resources.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-socket.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-system-capabilities.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-topology.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-change-device-passphrase.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-change-device-security.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-create-goal.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-delete-goal.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-dump-goal.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-enable-device-security.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-erase-device-data.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-load-goal.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-goal.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-region.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-change-sensor.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-performance.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-sensor.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-change-preferences.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-dump-support-data.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-help.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-modify-device.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-firmware.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-host.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-preferences.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-update-firmware.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-version.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-dump-debug-log.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-inject-error.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-start-diagnostic.1.gz
+#		${OUTPUT_DIR}/manpage/ipmctl-diagnostic-events.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-acpi.1.gz
+		${OUTPUT_DIR}/manpage/ipmctl-show-error-log.1.gz
+		)
+
+	add_custom_target(manpage ALL
+		DEPENDS ${MANPAGE_OUTPUT_FILES} ${DOCUMENTATION_INPUT_FILES}
+		)
+	if(ASCIIDOCTOR_FOUND)
+		add_custom_command(OUTPUT ${MANPAGE_OUTPUT_FILES}
+			COMMAND ${ASCIIDOCTOR_BINARIES} -b manpage -a mansource=ipmctl -a manmanual="ipmctl" -a ipmctl_version=${IPMCTL_VERSION_STRING} -a os_build=1 -a manpage=1 -D ${OUTPUT_DIR}/manpage ${DOCUMENTATION_INPUT_FILES}
+			COMMAND gzip -f ${OUTPUT_DIR}/manpage/*.1
+			COMMENT "Generating man pages"
+			DEPENDS ${DOCUMENTATION_INPUT_FILES}
+			)
+	else()
+		list(LENGTH DOCUMENTATION_INPUT_FILES LEN)
+		math(EXPR INPUT_LENGTH "${LEN} -1")
+		foreach(INDEX RANGE ${INPUT_LENGTH})
+			list(GET DOCUMENTATION_INPUT_FILES ${INDEX} MAN_INPUT)
+			list(GET MANPAGE_OUTPUT_FILES ${INDEX} MAN_OUTPUT)
+			string(REGEX REPLACE "\\.[^.]*$" "" MAN_GZ_INPUT ${MAN_OUTPUT})
+			string(REGEX REPLACE "1.gz$" "tmp.txt" MAN_TMP_INPUT ${MAN_OUTPUT})
+			add_custom_command(OUTPUT ${MAN_OUTPUT}
+				COMMAND sed -e 's/<</\\[/g' -e 's/>>/]/g' ${MAN_INPUT} > ${MAN_TMP_INPUT}
+				COMMAND ${A2X_BINARIES} -f manpage -a mansource=ipmctl -a manmanual="ipmctl" -a ipmctl_version=${IPMCTL_VERSION_STRING} -a os_build=1 -a manpage=1 -D ${OUTPUT_DIR}/manpage ${MAN_TMP_INPUT} 
+				COMMAND gzip -f ${MAN_GZ_INPUT}
+				COMMENT "Generating man pages"
+				DEPENDS ${MAN_INPUT}
+				)
+		endforeach()
+	endif()
 endif()
 
 # --------------------------------------------------------------------------------------------------

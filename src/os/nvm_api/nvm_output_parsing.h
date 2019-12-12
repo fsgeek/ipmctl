@@ -34,11 +34,11 @@ extern "C"
 #define XML_RESULT_BEGIN                        L"<Results>\n<Result>\n"
 #define XML_RESULT_END                          L"</Result>\n</Results>\n"
 #define XML_ERROR_BEGIN                         L"<Error Type=\"%d\">"
-#define XML_ERROR_END                           L"<Error/>\n"
+#define XML_ERROR_END                           L"</Error>\n"
 #define ESX_XML_FILE_BEGIN                      L"<?xml version=\"1.0\"?><output xmlns=\"http://www.vmware.com/Products/ESX/5.0/esxcli/\">"
 #define ESX_XML_FILE_END                        L"</output>"
-#define ESX_XML_LIST_STRING_BEGIN               L"<list type=\"string\">"
-#define ESX_XML_LIST_STRING_END                 L"</list>"
+#define ESX_XML_STRING_BEGIN                    L"<string><![CDATA["
+#define ESX_XML_STRING_END                      L"]]></string>"
 #define ESX_XML_LIST_STRUCT_BEGIN               L"<list type=\"structure\">"
 #define ESX_XML_LIST_STRUCT_END                 L"</list>"
 #define ESX_XML_KEY_VAL_TYPE_STRUCT_BEGIN       L"<structure typeName=\"KeyValue\">"
@@ -96,12 +96,13 @@ enum OutputType
 };
 
 int process_output(
-   enum DisplayType view_type,
-   wchar_t *display_name,
-   int rc,
-   FILE *fd,
-   int argc,
-   char *argv[]);
+  enum DisplayType view_type,
+  wchar_t *display_name,
+  wchar_t *display_delims,
+  int rc,
+  FILE *fd,
+  int argc,
+  char *argv[]);
 #ifdef __cplusplus
 }
 #endif

@@ -19,18 +19,24 @@
 #ifdef _MSC_VER
 #include <io.h>
 #include <conio.h>
+#define access _access
+#define F_OK 0
 #else
 #include <unistd.h>
 #include <wchar.h>
 #include <fcntl.h>
 #define _read read
 #define _getch getchar
-#include <safe_str_lib.h>
 #endif
 
 #include <sys/stat.h> 
 #include <fcntl.h>
 #include "os_efi_shell_parameters_protocol.h"
+#include "os_efi_api.h"
+#include "os_str.h"
+
+#define MAX_INPUT_PARAMS        256
+#define MAX_INPUT_PARAM_LEN     4096
 
 EFI_SHELL_PARAMETERS_PROTOCOL gOsShellParametersProtocol;
 EFI_SHELL_PARAMETERS_PROTOCOL *gEfiShellParametersProtocol = &gOsShellParametersProtocol;
@@ -38,21 +44,16 @@ EFI_SHELL_PARAMETERS_PROTOCOL *gEfiShellParametersProtocol = &gOsShellParameters
 int g_fast_path = 0;
 int g_file_io = 0;
 
-#define REC_FILE_NAME_SMBIOS "smbios.rec"
-#define REC_FILE_NAME_PASSTHRU "pass_thru.rec"
-#define REC_FILE_NAME_ACPI_NFIT "acpi_nfit.rec"
-#define REC_FILE_NAME_ACPI_PCAT "acpi_pcat.rec"
-#define REC_FILE_NAME_ACPI_PMTT "acpi_pmtt.rec"
+static BOOLEAN g_verbose_debug_print_enabled = FALSE;
 
-int g_record_mode = 0;
-int g_playback_mode = 0;
-char g_recordings_dir[PATH_MAX];
-int g_use_default_recordings_dir = 1;
-char g_smbios_rec_path[PATH_MAX];
-char g_passthru_rec_path[PATH_MAX];
-char g_acpi_nfit_rec_path[PATH_MAX];
-char g_acpi_pmtt_rec_path[PATH_MAX];
-char g_acpi_pcat_rec_path[PATH_MAX];
+typedef enum {
+  DefaultMode,
+  UserSpecifiedDir,
+  UserSpecifiedFile
+}RecordingDirMode;
+
+RecordingDirMode g_rec_file_creation_mode = DefaultMode;
+
 
 #define STR_DASH_OUTPUT_SHORT   "-o"
 #define STR_DASH_OUTPUT_LONG    "-output"
@@ -60,19 +61,13 @@ char g_acpi_pcat_rec_path[PATH_MAX];
 #define STR_ESXXML              "esx"
 #define STR_ESXTABLE            "esxtable"
 #define STR_TEXT                "text"
-#define STR_VERBOSE             "verbose"
+#define STR_DASH_VERBOSE_LONG   "-verbose"
+#define STR_DASH_VERBOSE_SHORT  "-v"
 #define STR_DASH_FAST_LONG      "-fast"
-#ifdef PLAYBACK_RECORD_SUPPORTED
-#define STR_RECORD_MODE         "-record"
-#define STR_PLAYBACK_MODE       "-playback"
-#define STR_REC_DIR             "-recdir"
-#endif
-#define MAX_INPUT_PARAMS        256
-#define MAX_INPUT_PARAM_LEN     4096
+
 
 EFI_STATUS init_protocol_shell_parameters_protocol(int argc, char *argv[])
 {
-  size_t argv_sz_chars = 0;
   char *p_tok_context = NULL;
   int new_argv_index = 1;
   int stripped_args = 0;
@@ -89,30 +84,14 @@ EFI_STATUS init_protocol_shell_parameters_protocol(int argc, char *argv[])
   gOsShellParametersProtocol.StdIn = stdin;
   gOsShellParametersProtocol.Argc = argc;
 
-#ifdef PLAYBACK_RECORD_SUPPORTED
-  os_get_cwd(g_recordings_dir, PATH_MAX);
-  strcat_s(g_recordings_dir, PATH_MAX, "/recordings/");
-#endif
-
   for (int Index = 1; Index < argc; Index++) {
-#ifdef PLAYBACK_RECORD_SUPPORTED
-    if(g_use_default_recordings_dir)
-    {
-      if(0 != s_strncmpi(argv[Index], STR_RECORD_MODE, strlen(STR_RECORD_MODE) + 1) &&
-          0 != s_strncmpi(argv[Index], STR_PLAYBACK_MODE, strlen(STR_PLAYBACK_MODE) + 1))
-      {
-        strcat_s(g_recordings_dir, PATH_MAX, argv[Index]);
-      }
-    }
-#endif
     stripped_args = 0;
     if ((0 == s_strncmpi(argv[Index], STR_DASH_OUTPUT_SHORT, strlen(STR_DASH_OUTPUT_SHORT) + 1) ||
       0 == s_strncmpi(argv[Index], STR_DASH_OUTPUT_LONG, strlen(STR_DASH_OUTPUT_LONG + 1))) &&
       Index + 1 != argc)
     {
       char *tok;
-      argv_sz_chars = strnlen_s(argv[Index + 1], MAX_INPUT_PARAM_LEN) + 1;
-      tok = s_strtok(argv[Index + 1], &argv_sz_chars, ",", &p_tok_context);
+      tok = os_strtok(argv[Index + 1], ",", &p_tok_context);
 
       while (tok)
       {
@@ -124,7 +103,7 @@ EFI_STATUS init_protocol_shell_parameters_protocol(int argc, char *argv[])
           gOsShellParametersProtocol.StdOut = fopen("output.tmp", "w+");
         }
 
-        tok = s_strtok(NULL, &argv_sz_chars, ",", &p_tok_context);
+        tok = os_strtok(NULL, ",", &p_tok_context);
       }
     }
     else if (0 == s_strncmpi(argv[Index], STR_DASH_FAST_LONG, strlen(STR_DASH_FAST_LONG) + 1))
@@ -133,33 +112,15 @@ EFI_STATUS init_protocol_shell_parameters_protocol(int argc, char *argv[])
       g_fast_path = 1;
       stripped_args = 1;
     }
-#ifdef PLAYBACK_RECORD_SUPPORTED
-    else if (0 == s_strncmpi(argv[Index], STR_RECORD_MODE, strlen(STR_RECORD_MODE) + 1))
+    if (0 == s_strncmpi(argv[Index], STR_DASH_VERBOSE_LONG, strlen(STR_DASH_VERBOSE_LONG) + 1)
+      || 0 == s_strncmpi(argv[Index], STR_DASH_VERBOSE_SHORT, strlen(STR_DASH_VERBOSE_SHORT) + 1))
     {
-      --gOsShellParametersProtocol.Argc;
-      g_record_mode = 1;
-      stripped_args = 1;
+      g_verbose_debug_print_enabled = TRUE;
     }
-    else if (0 == s_strncmpi(argv[Index], STR_PLAYBACK_MODE, strlen(STR_PLAYBACK_MODE) + 1))
-    {
-      --gOsShellParametersProtocol.Argc;
-      g_playback_mode = 1;
-      stripped_args = 1;
-    }
-    else if (0 == s_strncmpi(argv[Index], STR_REC_DIR, strlen(STR_REC_DIR) + 1) &&
-      Index + 1 != argc)
-    {
-      strcpy_s(g_recordings_dir, PATH_MAX, argv[Index+1]);
-      gOsShellParametersProtocol.Argc -= 2;
-      stripped_args = 1;
-      ++Index;
-      g_use_default_recordings_dir = 0;
-    }
-#endif
 
     if (!stripped_args)
     {
-      int argvSize = strlen(argv[Index]);
+      int argvSize = (int)strlen(argv[Index]);
       VOID * ptr = AllocateZeroPool((argvSize + 1) * sizeof(wchar_t));
       if (NULL == ptr) {
         FreePool(gOsShellParametersProtocol.Argv);
@@ -170,28 +131,6 @@ EFI_STATUS init_protocol_shell_parameters_protocol(int argc, char *argv[])
     }
   }
 
-#ifdef PLAYBACK_RECORD_SUPPORTED
-  if (g_playback_mode || g_record_mode)
-  {
-    strcat_s(g_recordings_dir, PATH_MAX, "/");
-    os_mkdir(g_recordings_dir);
-
-    strcpy_s(g_smbios_rec_path, PATH_MAX, g_recordings_dir);
-    strcat_s(g_smbios_rec_path, PATH_MAX, REC_FILE_NAME_SMBIOS);
-
-    strcpy_s(g_passthru_rec_path, PATH_MAX, g_recordings_dir);
-    strcat_s(g_passthru_rec_path, PATH_MAX, REC_FILE_NAME_PASSTHRU);
-
-    strcpy_s(g_acpi_nfit_rec_path, PATH_MAX, g_recordings_dir);
-    strcat_s(g_acpi_nfit_rec_path, PATH_MAX, REC_FILE_NAME_ACPI_NFIT);
-
-    strcpy_s(g_acpi_pmtt_rec_path, PATH_MAX, g_recordings_dir);
-    strcat_s(g_acpi_pmtt_rec_path, PATH_MAX, REC_FILE_NAME_ACPI_PMTT);
-
-    strcpy_s(g_acpi_pcat_rec_path, PATH_MAX, g_recordings_dir);
-    strcat_s(g_acpi_pcat_rec_path, PATH_MAX, REC_FILE_NAME_ACPI_PCAT);
-  }
-#endif
   return 0;
 }
 
@@ -214,4 +153,9 @@ int uninit_protocol_shell_parameters_protocol()
     FreePool(gOsShellParametersProtocol.Argv);
   }
   return EFI_SUCCESS;
+}
+
+BOOLEAN is_verbose_debug_print_enabled()
+{
+  return g_verbose_debug_print_enabled;
 }

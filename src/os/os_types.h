@@ -18,84 +18,18 @@
 
 #define COMMON_LOG_ENTRY()
 #define COMMON_LOG_ERROR(error) \
-	printf(error "\n")
+	//printf(error "\n")
 
 #define COMMON_LOG_EXIT_RETURN_I(rc)
 #define COMMON_LOG_DEBUG_F(fmt, ...) \
-	printf(fmt "\n", __VA_ARGS__)
+	//printf(fmt "\n", __VA_ARGS__)
 
 #define COMMON_LOG_ERROR_F(fmt, ...)\
-	printf(fmt "\n", __VA_ARGS__)
+	//printf(fmt "\n", __VA_ARGS__)
 
 #define COMMON_LOG_DEBUG(str)
 #define COMMON_LOG_EXIT()
 #define COMMON_LOG_HANDOFF_F(fmt, ...)
-
-#define	COMMON_LOG_WARN_F(fmt, ...)
-
-#define SYSTEM_EVENT_NOT_APPLICABLE 0
-
-#define SYSTEM_EVENT_TO_MASK(x) (1<<x)
-
-#define SYSTEM_EVENT_INFO_MASK		SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_TYPE_INFO)
-#define SYSTEM_EVENT_WARNING_MASK	SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_TYPE_WARNING)
-#define SYSTEM_EVENT_ERROR_MASK		SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_TYPE_ERROR)
-#define SYSTEM_EVENT_DEBUG_MASK		SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_TYPE_DEBUG)
-#define SYSTEM_EVENT_ALL_MASK     (SYSTEM_EVENT_INFO_MASK | SYSTEM_EVENT_WARNING_MASK | SYSTEM_EVENT_ERROR_MASK | SYSTEM_EVENT_DEBUG_MASK)
-#define SYSTEM_EVENT_ONLY_MASK    (SYSTEM_EVENT_INFO_MASK | SYSTEM_EVENT_WARNING_MASK | SYSTEM_EVENT_ERROR_MASK)
-#define SYSTEM_DEBUG_ONLY_MASK    (SYSTEM_EVENT_DEBUG_MASK)
-
-
-#define SYSTEM_EVENT_CAT_DIAG_MASK		SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_CAT_DIAG)
-#define SYSTEM_EVENT_CAT_FW_MASK	    SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_CAT_FW)
-#define SYSTEM_EVENT_CAT_CONFIG_MASK	SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_CAT_CONFIG)
-#define SYSTEM_EVENT_CAT_PM_MASK		SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_CAT_PM)
-#define SYSTEM_EVENT_CAT_QUICK_MASK		SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_CAT_QUICK)
-#define SYSTEM_EVENT_CAT_SECURITY_MASK	SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_CAT_SECURITY)
-#define SYSTEM_EVENT_CAT_HEALTH_MASK	SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_CAT_HEALTH)
-#define SYSTEM_EVENT_CAT_MGMT_MASK		SYSTEM_EVENT_TO_MASK(SYSTEM_EVENT_CAT_MGMT)
-#define SYSTEM_EVENT_CAT_ALL_MASK       (SYSTEM_EVENT_CAT_DIAG_MASK | SYSTEM_EVENT_CAT_FW_MASK | SYSTEM_EVENT_CAT_CONFIG_MASK | SYSTEM_EVENT_CAT_PM_MASK | \
-                                        SYSTEM_EVENT_CAT_QUICK_MASK | SYSTEM_EVENT_CAT_SECURITY_MASK | SYSTEM_EVENT_CAT_HEALTH_MASK | SYSTEM_EVENT_CAT_MGMT_MASK)
-
-#define MAX_TIMESTAMP_LEN       23 + 1   // mm/dd/yyyy hh:mm:ss.mmm
-
-#define SYSTEM_LOG_MAX_INI_ENTRY_SIZE 40
-#define SYSTEM_LOG_EVENT_FILE_NAME "EVENT_LOG_FILE_NAME"
-#define SYSTEM_LOG_DEBUG_FILE_NAME "DBG_LOG_FILE_NAME"
-#define SYSTEM_LOG_EVENT_LIMIT "EVENT_LOG_MAX"
-#define SYSTEM_LOG_DEBUG_LIMIT "DBG_LOG_MAX"
-#define SYSTEM_LOG_FILE_NAME_MAX_LEN 256
-#define SYSTEM_LOG_CODE_STRING_SIZE 4
-#define SYSTEM_LOG_EVENT_ID_STRING_SIZE 5
-#define ENVIRONMENT_VARIABLE_MAX_LEN 64
-
-/*!
-* An enumeration set describing system event types
-* Don't extand without changing the Event_Type structure - see event.h
-*/
-enum system_event_type
-{
-	SYSTEM_EVENT_TYPE_INFO = 0,	//!< Informational event
-	SYSTEM_EVENT_TYPE_WARNING = 1,	//!< Warning event
-	SYSTEM_EVENT_TYPE_ERROR = 2,	//!< Error event
-	SYSTEM_EVENT_TYPE_DEBUG = 3 //!< Debug event
-};
-
-/*!
-* An enumeration set describing system event categories
-* Don't extand without changing the Event_Type structure - see event.h
-*/
-enum system_event_category
-{
-    SYSTEM_EVENT_CAT_DIAG = 0,  //!< Diagnostic test events
-    SYSTEM_EVENT_CAT_FW = 1,    //!< FW consistency diagnostic test events
-    SYSTEM_EVENT_CAT_CONFIG = 2, //!< Platform config diagnostic test events
-    SYSTEM_EVENT_CAT_PM = 3, //!< PM metadata diagnostic test events
-    SYSTEM_EVENT_CAT_QUICK = 4, //!< Quick diagnostic test events
-    SYSTEM_EVENT_CAT_SECURITY = 5, //!< Secuirty diagnostic test events
-    SYSTEM_EVENT_CAT_HEALTH = 6, //!< Device health events
-    SYSTEM_EVENT_CAT_MGMT = 7 //!< Management software generated events
-};
 
 enum bios_emulated_opcode {
 	BIOS_EMULATED_COMMAND = 0xFD,
@@ -122,6 +56,7 @@ enum dsm_vendor_error {
    DSM_VENDOR_SPECIFIC_ERR = 0x0007,
 };
 
+#define DSM_ERROR(A)        (A != DSM_VENDOR_SUCCESS)
 #define IN_MB_SIZE          (1 << 20)   //!< Size of the OS mailbox large input payload
 #define OUT_MB_SIZE         (1 << 20)   //!< Size of the OS mailbox large output payload
 #define IN_PAYLOAD_SIZE     (128)       //!< Total size of the input payload registers
@@ -145,9 +80,12 @@ struct fw_cmd {
    unsigned char Opcode;
    unsigned char SubOpcode;
    unsigned char Status;
+   unsigned char DsmStatus;
 };
 #pragma pack(pop)
 
-int fw_mb_err_to_nvm_lib_err(int status, struct fw_cmd *p_fw_cmd);
-int dsm_err_to_nvm_lib_err(unsigned int status, struct fw_cmd *p_fw_cmd);
+#define DSM_ERROR(A)                  (A != DSM_VENDOR_SUCCESS)
+
+int fw_mb_err_to_nvm_lib_err(int status);
+int dsm_err_to_nvm_lib_err(unsigned int status);
 #endif // _OS_TYPES_H_

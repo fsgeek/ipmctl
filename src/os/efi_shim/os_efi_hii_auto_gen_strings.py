@@ -61,8 +61,8 @@ if __name__ == '__main__':
 	uefiRootPath = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 	# Later files override earlier files
 	inputFiles = [
-	os.path.join(uefiRootPath,'DcpmemPkg','common','NvmStatus.uni'),
-	os.path.join(uefiRootPath,'DcpmemPkg','driver','Core','Diagnostics','DiagnosticsMessages.uni')]
+	os.path.join(uefiRootPath,'DcpmPkg','common','NvmStatus.uni'),
+	os.path.join(uefiRootPath,'DcpmPkg','driver','Core','Diagnostics','DiagnosticsMessages.uni')]
 	outputFileDir = os.path.dirname(os.path.realpath(__file__))
 	# Output to the same directory
 	# Different headers because everyone needs indices (defs) but not the actual strings
@@ -77,9 +77,9 @@ if __name__ == '__main__':
 	# "Dictionary" / hash table that remembers the order items were inserted in
 	dict = OrderedDict()
 	for fileName in inputFiles:
-		# Need io to handle utf-16 files in python2
+		# Need io to handle utf-8 files in python2
 		# https://stackoverflow.com/a/844443
-		with io.open(fileName, 'r', encoding='utf-16') as f:
+		with io.open(fileName, 'r', encoding='utf-8') as f:
 			for line in f:
 				#print(line)
 				output = ConvertLine(line)

@@ -1,0 +1,91 @@
+// Copyright (c) 2018, Intel Corporation.
+// SPDX-License-Identifier: BSD-3-Clause
+
+ifdef::manpage[]
+ipmctl-dump-debug-log(1)
+========================
+endif::manpage[]
+
+NAME
+----
+ipmctl-dump-debug-log - Dumps encoded firmware debug logs from specified
+DCPMMs and optionally decodes to human readable text.
+
+SYNOPSIS
+--------
+[verse]
+ipmctl dump [OPTIONS] -destination (file_prefix) [-dict (file)] -debug [TARGETS] [PROPERTIES]
+
+DESCRIPTION
+-----------
+Dumps encoded firmware debug logs from specified DCPMMs and optionally
+decodes to human readable text.
+
+ifndef::os_build[]
+NOTE: For any non-functional DCPMMs logs will be retreived via SMBus.
+endif::os_build[]
+
+OPTIONS
+-------
+-h::
+-help::
+    Displays help for the command.
+
+-ddrt::
+  Used to specify DDRT as the desired transport protocol for the current invocation of ipmctl.
+
+-smbus::
+  Used to specify SMBUS as the desired transport protocol for the current invocation of ipmctl.
+
+NOTE: The -ddrt and -smbus options are mutually exclusive and may not be used together.
+
+-lpmb::
+  Used to specify large transport payload size for the current invocation of ipmctl.
+
+-spmb::
+  Used to specify small transport payload size for the current invocation of ipmctl.
+
+NOTE: The -lpmb and -spmb options are mutually exclusive and may not be used together.
+
+TARGET
+------
+-destination (file_prefix)::
+  The command will create files that use the given filename as a prefix
+  and append the DCPMM UID, DCPMM handle, debug log source, and the appropriate
+  file type (.bin for encoded logs, .txt for decoded logs) onto the end.
+[verse]
+file_prefix_Uid_Handle_logsource.[bin,txt]
+
+-dict (path)::
+  Optional file path to the dictionary file. If supplied, the command will
+  create both the binary debug log and a text file with decoded log data with
+  the file prefix specified by -destination.
+
+-dimm [DimmIDs]::
+  Dumps the debug logs from the specified DCPMMs.
+
+EXAMPLES
+--------
+Dumps and decodes the debug log from DCPMM 0x0001 and 0x0011 using the
+dictionary file.
+[verse]
+ipmctl dump -destination file_prefix -dict nlog_dict.txt -debug -dimm 0x0001,0x0011
+
+LIMITATIONS
+-----------
+To successfully execute this command, the specified DCPMM(s) must be manageable
+by the host software.
+
+RETURN DATA
+-----------
+Dumps the encoded and optionally decoded contents of all 3 firmware debug log
+sources for the specified DCPMMs. Output file names are generated based on the
+-destination parameter above.
+
+SAMPLE OUTPUT
+-------------
+[verse]
+Dumped media FW debug logs to file (file_prefix_8089-A1-1816-00000016_0x0001_media.bin)
+Decoded 456 records to file (file_prefix_8089-A1-1816-00000016_0x0001_media.txt)
+No spi FW debug logs found
+

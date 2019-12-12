@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include <stdio.h>
+#include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <Uefi.h>
@@ -29,6 +30,30 @@ extern UINT8 gSmbiosMajorVersion;
 extern int get_acpi_table(const char *signature, struct acpi_table *p_table, const unsigned int size);
 
 /**
+Gets the current timestamp in terms of milliseconds
+**/
+UINT64 GetCurrentMilliseconds()
+{
+  UINT64 retval = 0;
+
+  time_t s;  // Seconds
+  struct timespec spec;
+
+  clock_gettime(CLOCK_REALTIME, &spec);
+
+  s = spec.tv_sec;
+  retval = spec.tv_nsec / 1.0e6; // Convert nanoseconds to milliseconds
+  if (retval > 999) {
+    s++;
+    retval = 0;
+  }
+
+  retval = (spec.tv_sec * 1000) + retval;
+
+  return retval;
+}
+
+/**
 Loads a table as specified in the args
 
 @param[in]  currentTableName - the name of the table to load
@@ -37,10 +62,11 @@ Loads a table as specified in the args
 @retval EFI_SUCCESS  The count was returned properly
 @retval Other errors failure of io
 **/
-EFI_STATUS *
+EFI_STATUS
 get_table(
   IN CHAR8* currentTableName,
-  OUT EFI_ACPI_DESCRIPTION_HEADER ** table
+  OUT EFI_ACPI_DESCRIPTION_HEADER ** table,
+  OUT UINT32 *tablesize
 );
 
 EFI_STATUS
@@ -68,32 +94,36 @@ passthru_os(
 
 EFI_STATUS
 get_nfit_table(
-  OUT EFI_ACPI_DESCRIPTION_HEADER ** table
+  OUT EFI_ACPI_DESCRIPTION_HEADER ** table,
+  OUT UINT32 *tablesize
 )
 {
-  return get_table("NFIT", table);
+  return get_table("NFIT", table, tablesize);
 }
 
 EFI_STATUS
 get_pcat_table(
-  OUT EFI_ACPI_DESCRIPTION_HEADER ** table
+  OUT EFI_ACPI_DESCRIPTION_HEADER ** table,
+  OUT UINT32 *tablesize
 )
 {
-  return get_table("PCAT", table);
+  return get_table("PCAT", table, tablesize);
 }
 
 EFI_STATUS
 get_pmtt_table(
-  OUT EFI_ACPI_DESCRIPTION_HEADER ** table
+  OUT EFI_ACPI_DESCRIPTION_HEADER ** table,
+  OUT UINT32 *tablesize
 )
 {
-  return get_table("PMTT", table);
+  return get_table("PMTT", table, tablesize);
 }
 
-EFI_STATUS *
+EFI_STATUS
 get_table(
   IN CHAR8* currentTableName,
-  OUT EFI_ACPI_DESCRIPTION_HEADER ** table
+  OUT EFI_ACPI_DESCRIPTION_HEADER ** table,
+  OUT UINT32 *tablesize
 )
 {
   *table = NULL;
@@ -108,7 +138,7 @@ get_table(
   {
     return EFI_END_OF_FILE;
   }
-
+  *tablesize = buf_size;
   get_acpi_table(currentTableName, (struct acpi_table*)*table, buf_size);
   return EFI_SUCCESS;
 }
@@ -193,4 +223,10 @@ get_smbios_table(
 )
 {
   return get_smbios_table_alloc(&gSmbiosTable, &gSmbiosTableSize, &gSmbiosMajorVersion, &gSmbiosMinorVersion);
+}
+
+UINT32
+get_first_arg_from_va_list(VA_LIST args)
+{
+  return *((UINT32 *)(args[0].reg_save_area + args[0].gp_offset));
 }

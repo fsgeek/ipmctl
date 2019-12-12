@@ -13,7 +13,7 @@
 
 #include <stddef.h>
 #include <limits.h>
-#include <NvmStatusValues.h>
+#include <NvmSharedDefs.h>
 
 #ifdef _MSC_VER
 #include <stdlib.h>
@@ -35,18 +35,6 @@ byte swap
 
 #define NVM_PRODUCT_NAME "Intel(R) Optane(TM) DC persistent memory Software\0"
 #define NVM_SYSLOG_SOURCE          "NVM_MGMT"
-#define NVM_DEFAULT_NAMESPACE_NAME "NvDimmVol"
-#define NVM_SYSTEM "Intel(R) Optane(TM) DC Persistent Memory"
-#define NVM_INTEL_VENDOR_ID 0x8980
-#define NVM_DIMM_SUBSYSTEM_VENDOR_ID SWAP_BYTES_U16(0x8980)
-#define NVM_DIMM_SUBSYSTEM_DEVICE_ID_1 SWAP_BYTES_U16(0x0979)
-#define NVM_DIMM_SUBSYSTEM_DEVICE_ID_2 SWAP_BYTES_U16(0x097A)
-#define NVM_DIMM_SUBSYSTEM_DEVICE_ID_3 SWAP_BYTES_U16(0x097B)
-
-#define NVM_INTEL_VENDOR_ID_STR "0x8089"
-#define NVM_INTEL_DEVICE_ID_STR "0x979"
-#define NVM_INTEL_SUBSYSTEM_VENDOR_ID_STR "0x8980"
-#define NVM_DIMM_SUBSYSTEM_DEVICE_ID_1_STR "0x979"
 
 #define NVM_COMPUTERNAME_LEN 256 ///< Length of host string
 #define NVM_OSNAME_LEN  256 ///< Length of host OS string
@@ -67,20 +55,11 @@ byte swap
 #define NVM_EVENT_MSG_LEN 1024 ///< Length of event message string
 #define NVM_EVENT_ARG_LEN 1024 ///< Length of event argument string
 #define NVM_MAX_EVENT_ARGS  3 ///< Maximum number of event arguments
-#define NVM_FILTER_ON_TYPE  0x01 ///< Filter on event type
-#define NVM_FILTER_ON_SEVERITY  0x02 ///< Filter on event severity
-#define NVM_FILTER_ON_CODE  0x04 ///< Filter on code
-#define NVM_FILTER_ON_UID 0x08 ///< Filter on device uid
-#define NVM_FILTER_ON_AFTER 0x10 ///< Filter on time after
-#define NVM_FILTER_ON_BEFORE  0x20 ///< Filter on time before
-#define NVM_FILTER_ON_EVENT 0x40 ///< Filter on event ID
-#define NVM_FILTER_ON_AR  0x80 ///< Filter on action required
 #define NVM_PATH_LEN  PATH_MAX ///< Max length of file or directory path string (OS specific)
 #define NVM_DEVICE_LOCATOR_LEN  128 ///< Length of the device locator string
 #define NVM_BANK_LABEL_LEN  128 ///< Length of the bank label string
 #define NVM_NAMESPACE_NAME_LEN  64 ///< Length of namespace friendly name string
 #define NVM_NAMESPACE_PURPOSE_LEN 64 ///< Length of namespace purpose string
-#define NVM_MAX_SOCKETS 4 ///< Maximum number of sockets per system
 #define NVM_MAX_SOCKET_DIGIT_COUNT  4 ///< Maximum number of digits in a socket count
 #define NVM_MEMORY_CONTROLLER_CHANNEL_COUNT 3 ///< expected number of channels per iMC
 #define NVM_MAX_INTERLEAVE_SETS_PER_DIMM  2 ///< Max number of App Direct interleave sets per DIMM
@@ -272,65 +251,10 @@ enum acpi_event_type
   ACPI_UNCORRECTABLE
 };
 
-
-typedef struct _PMON_REGISTERS {
-  /**
-  This will specify whether or not to return the extra smart data along with the PMON
-  Counter data.
-  0x0 - No Smart Data DDRT or 3D XPoint
-  0x1 - DDRT Data only to be returned
-  0x2 - 3D XPoint Data only to be returned
-  0x3 - DDRT & 3D XPoint Data to be returned
-  All other values reserved
-  **/
-  NVM_UINT8 SmartDataMask;
-  NVM_UINT8 Reserved1[3];
-  /**
-  This will specify which group that is currently enabled. If no groups are enabled Group
-  F will be returned
-  **/
-  NVM_UINT8 GroupEnabled;
-  NVM_UINT8 Reserved2[18];
-  NVM_UINT8 PMON4Counter[4];
-  NVM_UINT8 PMON5Counter[4];
-  NVM_UINT8 Reserved3[4];
-  NVM_UINT8 PMON7Counter[4];
-  NVM_UINT8 PMON8Counter[4];
-  NVM_UINT8 PMON9Counter[4];
-  NVM_UINT8 Reserved4[15];
-  NVM_UINT8 PMON14Counter[4];
-  NVM_UINT8 Reserved5[4];
-  /**
-  DDRT Reads for current power cycle
-  **/
-  NVM_UINT8 DDRTRD[8];
-  /**
-  DDRT Writes for current power cycle
-  **/
-  NVM_UINT8 DDRTWR[8];
-  /**
-  3D XPoint Reads for current power cycle
-  **/
-  NVM_UINT8 SXPRD[8];
-  /**
-  3D XPoint Writes for current power cycle
-  **/
-  NVM_UINT8 SXPWR[8];
-  /**
-  Current 3D XPoint Media temp
-  **/
-  NVM_UINT8 MTP[2];
-  /**
-  Current Controller temp
-  **/
-  NVM_UINT8 CTP[2];
-  NVM_UINT8 Reserved[19];
-}PMON_REGISTERS;
-
 #define MAX_ERROR_LOG_SZ 64
 
 /**
- * Describes an error log 
+ * Describes an error log.
  */
 typedef struct _ERROR_LOG {
   NVM_UINT16 DimmID;                        ///< The DimmID
@@ -340,7 +264,7 @@ typedef struct _ERROR_LOG {
 } ERROR_LOG;
 
 /**
- * Describes a thermal error log
+ * Describes a thermal error log.
  */
 typedef struct _THERMAL_ERROR_LOG_PER_DIMM {
   NVM_INT16   Temperature;        ///< In celsius
@@ -351,7 +275,7 @@ typedef struct _THERMAL_ERROR_LOG_PER_DIMM {
 } THERMAL_ERROR_LOG;
 
 /**
- * Describes a media error log
+ * Describes a media error log.
  */
 typedef struct _MEDIA_ERROR_LOG_PER_DIMM {
   NVM_UINT64  Dpa;                ///< Specifies DPA address of error

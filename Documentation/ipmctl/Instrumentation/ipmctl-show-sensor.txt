@@ -1,0 +1,157 @@
+// Copyright (c) 2018, Intel Corporation.
+// SPDX-License-Identifier: BSD-3-Clause
+
+ifdef::manpage[]
+ipmctl-show-sensor(1)
+=====================
+endif::manpage[]
+
+NAME
+----
+ipmctl-show-sensor - Shows health statistics for one or more DCPMMs
+
+SYNOPSIS
+--------
+[verse]
+ipmctl show [OPTIONS] -sensor [SENSORS] [TARGETS]
+
+DESCRIPTION
+-----------
+ipmctl-show-device to view more detailed information about a DCPMM.
+
+OPTIONS
+-------
+-a::
+-all::
+  Shows all attributes.
+
+NOTE: The all and display options are exclusive and may not be used together.
+
+-d (attributes)::
+-display (attributes)::
+  Filters the returned attributes by explicitly specifying a comma-separated
+  list of any of the attributes defined in the Return Data section.
+
+NOTE: The all and display options are exclusive and may not be used together.
+
+-h::
+-help::
+  Displays help for the command.
+
+-ddrt::
+  Used to specify DDRT as the desired transport protocol for the current invocation of ipmctl.
+
+-smbus::
+  Used to specify SMBUS as the desired transport protocol for the current invocation of ipmctl.
+
+NOTE: The -ddrt and -smbus options are mutually exclusive and may not be used together.
+
+ifdef::os_build[]
+-o (text|nvmxml)::
+-output (text|nvmxml)::
+  Changes the output format. One of: "text" (default) or "nvmxml".
+endif::os_build[]
+
+SENSORS
+-------
+Health::
+  (Default) The current DCPMM health as reported in the SMART log
+
+MediaTemperature::
+  (Default) The current DCPMM media temperature in Celsius
+
+ControllerTemperature::
+  (Default) The current DCPMM controller temperature in Celsius
+
+PercentageRemaining::
+  (Default) Remaining DCPMM’s life as a percentage value of factory expected
+  life span
+
+LatchedDirtyShutdownCount::
+  (Default) The number of shutdowns without notification over the lifetime of
+  the DCPMM
+
+UnlatchedDirtyShutdownCount::
+  (Default) The number of shutdowns without notification over the lifetime of
+  the DCPMM. This counter is the same as LatchedDirtyShutdownCount except it will
+  always be incremented on a dirty shutdown, even if Latch System Shutdown Status
+  was not enabled
+
+PowerOnTime::
+  (Default) The total power-on time over the lifetime of the DCPMM
+
+UpTime::
+  (Default) The total power-on time since the last power cycle of the DCPMM
+
+PowerCycles::
+  (Default) The number of power cycles over the lifetime of the DCPMM
+
+FwErrorCount::
+  The total number of firmware error log entries
+
+TARGETS
+-------
+-dimm [DimmIDs]::
+  Restricts output to the sensors on specific DCPMMs by supplying the DIMM
+  target and one or more comma-separated DCPMM identifiers. The default is to
+  display sensors for all manageable DCPMMs.
+
+EXAMPLES
+--------
+Gets all sensor information for all DCPMMs.
+[verse]
+ipmctl show -sensor
+
+Shows the media temperature sensor for the specified DCPMM.
+[verse]
+ipmctl show -sensor MediaTemperature -dimm 1234
+
+LIMITATIONS
+-----------
+The specified DCPMM(s) must be manageable by the host software.
+
+RETURN DATA
+-----------
+This command displays a table with a row for each sensor on each DCPMM. Applying
+a specific DCPMM or sensor type target limits the number of rows. Applying
+options can be used to expand or restrict the output.
+
+DimmID::
+  (Default) The DCPMM identifier
+
+Type::
+  (Default) The sensor type. Refer to the sensor table above.
+
+CurrentValue::
+  (Default) The current reading followed by the units of measurement
+  (e.g., 57 °C or 25%)
+
+AlarmThreshold::
+  The threshold value at which an alarm for the respective sensor will be triggered.
+
+ThrottlingStopThreshold::
+  The threshold value at which firmware will stop throttling to reduce overall thermals and keep the DIMM within safe operating temperatures.
+
+ThrottlingStartThreshold::
+  The threshold value at which firmware will start throttling to reduce overall thermals and keep the DIMM within safe operating temperatures.
+
+ShutdownThreshold::
+  The threshold value at which device shutdown will occur.
+
+SettableThresholds::
+  A list of user settable thresholds. Zero or more of:
+  - "AlarmThreshold"
+
+SupportedThresholds::
+  A list of supported thresholds. Zero or more of:
+  - "AlarmThreshold"
+  - "ThrottlingStopThreshold"
+  - "ThrottlingStartThreshold"
+  - "ShutdownThreshold"
+
+EnabledState::
+  Whether the alarm threshold is enabled, disabled or not applicable.
+  One of:
+  - 0: Disabled
+  - 1: Enabled
+  - N/A
